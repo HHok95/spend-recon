@@ -8,6 +8,8 @@ import org.springframework.boot.autoconfigure.orm.jpa.HibernateProperties
 import org.springframework.boot.autoconfigure.orm.jpa.JpaProperties
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.jdbc.core.JdbcTemplate
+import java.nio.file.Files
+import java.nio.file.Path
 import java.util.UUID
 
 @SpringBootTest
@@ -25,12 +27,40 @@ class FlywayMigrationTest : PostgresIntegrationTest() {
     fun `spring context starts with flyway validate and open-in-view off`() {
         assertThat(hibernateProperties.ddlAuto).isEqualTo("validate")
         assertThat(jpaProperties.openInView).isFalse()
-        assertThat(
+
+        val expected = classpathMigrationVersions()
+        assertThat(expected).isNotEmpty()
+
+        val failed =
             jdbc.queryForObject(
-                "SELECT version FROM flyway_schema_history WHERE success",
+                "SELECT count(*) FROM flyway_schema_history WHERE success = false",
+                Long::class.java,
+            )
+        assertThat(failed).isZero()
+
+        val applied =
+            jdbc.queryForList(
+                """
+                SELECT version
+                FROM flyway_schema_history
+                WHERE success AND version IS NOT NULL
+                """.trimIndent(),
                 String::class.java,
-            ),
-        ).isEqualTo("1")
+            ).map { it.toInt() }
+        assertThat(applied).containsExactlyInAnyOrderElementsOf(expected)
+
+        val latest =
+            jdbc.queryForObject(
+                """
+                SELECT version
+                FROM flyway_schema_history
+                WHERE success AND version IS NOT NULL
+                ORDER BY installed_rank DESC
+                LIMIT 1
+                """.trimIndent(),
+                String::class.java,
+            ) ?: error("flyway_schema_history has no successful version")
+        assertThat(latest.toInt()).isEqualTo(expected.max())
     }
 
     @Test
@@ -139,6 +169,24 @@ class FlywayMigrationTest : PostgresIntegrationTest() {
                 documentId,
             )
         assertThat(live).isEqualTo(1L)
+    }
+
+    private fun classpathMigrationVersions(): List<Int> {
+        val root =
+            javaClass.classLoader.getResource("db/migration")
+                ?: error("db/migration is not on the classpath")
+        check(root.protocol == "file") {
+            "db/migration must be a directory on the classpath, was ${root.protocol}"
+        }
+        val pattern = Regex("""V(\d+)__.+\.sql""")
+        val versions = mutableListOf<Int>()
+        Files.newDirectoryStream(Path.of(root.toURI())).use { stream ->
+            for (path in stream) {
+                val match = pattern.matchEntire(path.fileName.toString()) ?: continue
+                versions.add(match.groupValues[1].toInt())
+            }
+        }
+        return versions.distinct().sorted()
     }
 
     private fun insertTransaction(id: UUID) {

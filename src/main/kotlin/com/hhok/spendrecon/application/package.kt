@@ -1,4 +1,4 @@
 package com.hhok.spendrecon.application
 
-// IngestService, MatchingService, ApprovalService, IdempotencyService, and
-// OutboxPublisher live in this package. Later pull requests add them.
+// IngestService and IdempotencyService live in this package.
+// MatchingService, ApprovalService, and OutboxPublisher are later pull requests.

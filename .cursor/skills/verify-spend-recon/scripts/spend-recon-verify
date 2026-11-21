@@ -9,7 +9,7 @@ COMPOSE_FILE="$ROOT/docker-compose.yml"
 
 usage() {
   echo "usage: RUN_ID=<id> $0 launch|doctor|drive <feature>|evidence|cleanup" >&2
-  echo "features: health prometheus scalar schema audit" >&2
+  echo "features: health prometheus scalar schema audit ingest" >&2
   exit 2
 }
 
@@ -63,6 +63,55 @@ psql_exec() {
   compose exec -T postgres psql -v ON_ERROR_STOP=1 -U spendrecon -d spendrecon "$@"
 }
 
+# Highest V<n> filename. The check follows the files, so a later migration still passes.
+highest_migration_version() {
+  local dir="$ROOT/src/main/resources/db/migration"
+  local highest="" n file base
+  local saw=0
+  for file in "$dir"/V*__*.sql; do
+    [[ -f "$file" ]] || continue
+    base="$(basename "$file")"
+    [[ "$base" =~ ^V([0-9]+)__ ]] || continue
+    n=$((10#${BASH_REMATCH[1]}))
+    if [[ "$saw" -eq 0 || "$n" -gt "$highest" ]]; then
+      highest="$n"
+      saw=1
+    fi
+  done
+  if [[ "$saw" -eq 0 ]]; then
+    echo "No V<n>__*.sql files in $dir" >&2
+    return 1
+  fi
+  printf '%s\n' "$highest"
+}
+
+# Sets FLYWAY_VERSION to the highest successful version (empty when none)
+# and FLYWAY_FAILED to the number of rows with success = false.
+# Pass "quiet" while Postgres may still be starting.
+flyway_read() {
+  local quiet="${1:-}"
+  local version failed
+  FLYWAY_VERSION=""
+  FLYWAY_FAILED=""
+  if [[ "$quiet" == "quiet" ]]; then
+    if ! version="$(psql_exec -tAc "SELECT max(version::int) FROM flyway_schema_history WHERE success" 2>/dev/null)"; then
+      return 1
+    fi
+    if ! failed="$(psql_exec -tAc "SELECT count(*) FROM flyway_schema_history WHERE success = false" 2>/dev/null)"; then
+      return 1
+    fi
+  else
+    if ! version="$(psql_exec -tAc "SELECT max(version::int) FROM flyway_schema_history WHERE success")"; then
+      return 1
+    fi
+    if ! failed="$(psql_exec -tAc "SELECT count(*) FROM flyway_schema_history WHERE success = false")"; then
+      return 1
+    fi
+  fi
+  FLYWAY_VERSION="$(printf '%s' "$version" | tr -d '[:space:]')"
+  FLYWAY_FAILED="$(printf '%s' "$failed" | tr -d '[:space:]')"
+}
+
 launch() {
   require_run_id
   EVIDENCE_DIR="$(evidence_dir)"
@@ -85,17 +134,19 @@ EOF
   echo "Starting compose project $PROJECT"
   compose up --build -d >"$EVIDENCE_DIR/launch/compose-up.txt" 2>&1
 
-  local ready=0 code version i
+  local ready=0 code version failed expected i
+  expected="$(highest_migration_version)"
   for i in $(seq 1 90); do
     code="$(curl -sS --max-time 2 -o "$EVIDENCE_DIR/launch/health.json" -w '%{http_code}' "$BASE_URL/actuator/health" 2>"$EVIDENCE_DIR/launch/health.stderr" || true)"
     version=""
-    if version="$(psql_exec -tAc "SELECT version FROM flyway_schema_history WHERE success" 2>/dev/null)"; then
-      version="$(printf '%s' "$version" | tr -d '[:space:]')"
-    else
-      version=""
+    failed=""
+    if flyway_read quiet; then
+      version="$FLYWAY_VERSION"
+      failed="$FLYWAY_FAILED"
     fi
-    echo "try $i health=$code flyway=${version:-none}" >>"$EVIDENCE_DIR/launch/wait.log"
-    if [[ "$code" == "200" ]] && grep -q '"status":"UP"' "$EVIDENCE_DIR/launch/health.json" && [[ "$version" == "1" ]]; then
+    echo "try $i health=$code flyway=${version:-none} failed=${failed:-none} expected=$expected" >>"$EVIDENCE_DIR/launch/wait.log"
+    if [[ "$code" == "200" ]] && grep -q '"status":"UP"' "$EVIDENCE_DIR/launch/health.json" \
+      && [[ -n "$version" && "$failed" == "0" && "$version" == "$expected" ]]; then
       printf '%s\n' "$version" >"$EVIDENCE_DIR/launch/flyway-version.txt"
       ready=1
       break
@@ -109,7 +160,7 @@ EOF
     echo "If the app log says 'Connect timed out' while Postgres is healthy, this host's legacy iptables FORWARD policy may be DROP. A normal Docker install does not need a change. On this kind of VM: sudo iptables-legacy -P FORWARD ACCEPT" >&2
     exit 1
   fi
-  echo "Ready at $BASE_URL (flyway version 1). Evidence: $EVIDENCE_DIR"
+  echo "Ready at $BASE_URL (flyway version $version, no failed migrations). Evidence: $EVIDENCE_DIR"
 }
 
 check() {
@@ -162,13 +213,19 @@ doctor() {
     check "GET /actuator/health without an API key is UP" 1
   fi
 
-  local version
-  version="$(psql_exec -tAc "SELECT version FROM flyway_schema_history WHERE success" | tr -d '[:space:]')"
+  local version failed expected
+  expected="$(highest_migration_version)"
+  version=""
+  failed=""
+  if flyway_read; then
+    version="$FLYWAY_VERSION"
+    failed="$FLYWAY_FAILED"
+  fi
   printf '%s\n' "$version" >"$EVIDENCE_DIR/doctor/flyway-version.txt"
-  if [[ "$version" == "1" ]]; then
-    check "flyway version 1 applied" 0
+  if [[ -n "$version" && "$failed" == "0" && "$version" == "$expected" ]]; then
+    check "flyway version $expected applied with no failures" 0
   else
-    check "flyway version 1 applied" 1
+    check "flyway version $expected applied with no failures" 1
   fi
 
   code="$(curl -sS --max-time 5 -o "$EVIDENCE_DIR/doctor/api-docs.json" -w '%{http_code}' "$BASE_URL/v3/api-docs" 2>"$EVIDENCE_DIR/doctor/api-docs.stderr" || true)"
@@ -182,7 +239,7 @@ doctor() {
     echo "Doctor failed. See $EVIDENCE_DIR/doctor/doctor.txt" >&2
     exit 1
   fi
-  echo "Doctor passed. Auth is not required on the current read routes."
+  echo "Doctor passed. Read routes do not require an API key. POST /transactions and POST /documents do."
 }
 
 curl_capture() {
@@ -259,10 +316,17 @@ drive_schema() {
   [[ "$hash_count" == "0" ]] || { echo "documents.content_hash exists" >&2; exit 1; }
   psql_exec -tAc "SELECT indexdef FROM pg_indexes WHERE indexname = 'matches_one_live_per_document'" >"$dir/indexdef.txt"
   grep -q 'UNIQUE' "$dir/indexdef.txt" && grep -q 'REJECTED' "$dir/indexdef.txt" || { echo "live-match index missing" >&2; exit 1; }
-  local version
-  version="$(psql_exec -tAc "SELECT version FROM flyway_schema_history WHERE success" | tr -d '[:space:]')"
+  local version failed expected
+  expected="$(highest_migration_version)"
+  if ! flyway_read; then
+    echo "could not read flyway_schema_history" >&2
+    exit 1
+  fi
+  version="$FLYWAY_VERSION"
+  failed="$FLYWAY_FAILED"
   printf '%s\n' "$version" >"$dir/flyway-version.txt"
-  [[ "$version" == "1" ]] || { echo "flyway version $version" >&2; exit 1; }
+  [[ -n "$version" && "$failed" == "0" && "$version" == "$expected" ]] \
+    || { echo "flyway version ${version:-none}, expected $expected, failed rows ${failed:-unknown}" >&2; exit 1; }
   echo "schema passed"
 }
 
@@ -334,6 +398,176 @@ SQL
   echo "audit passed"
 }
 
+post_json() {
+  local dir="$1"
+  local url="$2"
+  local idem="$3"
+  local file="$4"
+  local api_key="${5:-local-dev-key}"
+  mkdir -p "$dir"
+  {
+    echo "curl -H Content-Type:application/json -H X-API-Key -H Idempotency-Key:$idem --data-binary @$file $url"
+  } >"$dir/command.txt"
+  local code
+  code="$(curl -sS --max-time 30 -D "$dir/headers.txt" -o "$dir/body.json" -w '%{http_code}' \
+    -H 'Content-Type: application/json' \
+    -H "X-API-Key: $api_key" \
+    -H "Idempotency-Key: $idem" \
+    --data-binary @"$file" \
+    "$url" 2>"$dir/stderr.txt")"
+  printf '%s\n' "$code" >"$dir/http-status.txt"
+  printf '%s\n' "$code"
+}
+
+require_status() {
+  local file="$1"
+  local want="$2"
+  local got
+  got="$(tr -d '[:space:]' <"$file")"
+  [[ "$got" == "$want" ]] || { echo "expected HTTP $want in $file, got $got" >&2; exit 1; }
+}
+
+drive_ingest() {
+  local root="$EVIDENCE_DIR/ingest"
+  local api="local-dev-key"
+  mkdir -p "$root"
+
+  local unauth="$root/unauthenticated"
+  mkdir -p "$unauth"
+  printf '%s' '{"cardOwnerId":"unauth-owner","merchant":"Cafe","amount":"1.00","currency":"AUD","txnDate":"2026-11-21"}' >"$unauth/request.json"
+  echo "curl POST /transactions without X-API-Key" >"$unauth/command.txt"
+  local code
+  code="$(curl -sS --max-time 20 -D "$unauth/headers.txt" -o "$unauth/body.json" -w '%{http_code}' \
+    -H 'Content-Type: application/json' \
+    -H 'Idempotency-Key: no-auth' \
+    --data-binary @"$unauth/request.json" \
+    "$BASE_URL/transactions" 2>"$unauth/stderr.txt")"
+  printf '%s\n' "$code" >"$unauth/http-status.txt"
+  [[ "$code" == "401" ]] || { echo "unauthenticated HTTP $code" >&2; exit 1; }
+  grep -qi 'application/problem+json' "$unauth/headers.txt" || { echo "401 was not problem+json" >&2; exit 1; }
+
+  local number="$root/amount-number"
+  mkdir -p "$number"
+  printf '%s' '{"cardOwnerId":"number-owner","merchant":"Cafe","amount":12.34,"currency":"AUD","txnDate":"2026-11-21"}' >"$number/request.json"
+  code="$(post_json "$number" "$BASE_URL/transactions" "number-key" "$number/request.json" "$api")"
+  [[ "$code" == "400" ]] || { echo "json number HTTP $code" >&2; exit 1; }
+  local number_rows
+  number_rows="$(psql_exec -tAc "SELECT count(*) FROM card_transactions WHERE card_owner_id = 'number-owner'" | tr -d '[:space:]')"
+  [[ "$number_rows" == "0" ]] || { echo "json number stored a row" >&2; exit 1; }
+
+  local parallel="$root/parallel"
+  mkdir -p "$parallel"
+  printf '%s' '{"cardOwnerId":"parallel-owner","merchant":"Parallel Cafe","amount":"10.00","currency":"AUD","txnDate":"2026-11-21"}' >"$parallel/request.json"
+  echo "10 parallel curl POST /transactions Idempotency-Key parallel-key-1" >"$parallel/command.txt"
+  local i
+  for i in $(seq 1 10); do
+    curl -sS --max-time 30 -D "$parallel/headers-$i.txt" -o "$parallel/body-$i.json" -w '%{http_code}' \
+      -H 'Content-Type: application/json' \
+      -H "X-API-Key: $api" \
+      -H 'Idempotency-Key: parallel-key-1' \
+      --data-binary @"$parallel/request.json" \
+      "$BASE_URL/transactions" >"$parallel/status-$i.txt" 2>"$parallel/stderr-$i.txt" &
+  done
+  wait
+  python3 - "$parallel" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+statuses = [(root / f"status-{i}.txt").read_text().strip() for i in range(1, 11)]
+bodies = [json.loads((root / f"body-{i}.json").read_text()) for i in range(1, 11)]
+if statuses != ["201"] * 10:
+    raise SystemExit(f"parallel statuses {statuses}")
+ids = {body["id"] for body in bodies}
+if len(ids) != 1:
+    raise SystemExit(f"parallel ids {ids}")
+(root / "id.txt").write_text(next(iter(ids)) + "\n")
+PY
+  code="$(curl -sS --max-time 10 -o "$parallel/prometheus.txt" -w '%{http_code}' "$BASE_URL/actuator/prometheus" 2>"$parallel/prometheus.stderr.txt")"
+  [[ "$code" == "200" ]] || { echo "prometheus HTTP $code" >&2; exit 1; }
+  local replays
+  replays="$(awk '/^idempotent_replays_total / {print $2}' "$parallel/prometheus.txt" | tail -1)"
+  python3 -c 'import sys; raise SystemExit(0 if float(sys.argv[1]) == 9 else 1)' "$replays" \
+    || { echo "idempotent_replays_total was ${replays:-missing}, want 9" >&2; exit 1; }
+  psql_exec -c "SELECT id, amount_minor, btrim(currency) AS currency FROM card_transactions WHERE card_owner_id = 'parallel-owner'" >"$parallel/rows.txt"
+  local parallel_count minor
+  parallel_count="$(psql_exec -tAc "SELECT count(*) FROM card_transactions WHERE card_owner_id = 'parallel-owner'" | tr -d '[:space:]')"
+  minor="$(psql_exec -tAc "SELECT amount_minor FROM card_transactions WHERE card_owner_id = 'parallel-owner'" | tr -d '[:space:]')"
+  [[ "$parallel_count" == "1" && "$minor" == "1000" ]] || { echo "parallel row count=$parallel_count minor=$minor" >&2; exit 1; }
+
+  local created="$root/created"
+  mkdir -p "$created"
+  printf '%s' '{"cardOwnerId":"aud-owner","merchant":"  Cafe   Nero ","amount":"12.34","currency":"aud","txnDate":"2026-11-21","tax":"1.10"}' >"$created/request.json"
+  code="$(post_json "$created" "$BASE_URL/transactions" "aud-key-1" "$created/request.json" "$api")"
+  [[ "$code" == "201" ]] || { echo "create HTTP $code" >&2; exit 1; }
+  psql_exec -c "SELECT amount_minor, btrim(currency) AS currency, tax_minor, merchant_norm, status FROM card_transactions WHERE card_owner_id = 'aud-owner'" >"$created/row.txt"
+  grep -q '1234' "$created/row.txt" && grep -q 'AUD' "$created/row.txt" && grep -q '110' "$created/row.txt" \
+    && grep -q 'cafe nero' "$created/row.txt" && grep -q 'UNMATCHED' "$created/row.txt" \
+    || { echo "AUD row was not 1234/110/cafe nero" >&2; exit 1; }
+
+  local replay="$root/replay"
+  mkdir -p "$replay"
+  code="$(post_json "$replay" "$BASE_URL/transactions" "aud-key-1" "$created/request.json" "$api")"
+  [[ "$code" == "201" ]] || { echo "replay HTTP $code" >&2; exit 1; }
+  python3 - "$created/body.json" "$replay/body.json" <<'PY'
+import json, pathlib, sys
+first = json.loads(pathlib.Path(sys.argv[1]).read_text())
+second = json.loads(pathlib.Path(sys.argv[2]).read_text())
+if first != second:
+    raise SystemExit(f"replay body {second} != {first}")
+PY
+  local aud_count
+  aud_count="$(psql_exec -tAc "SELECT count(*) FROM card_transactions WHERE card_owner_id = 'aud-owner'" | tr -d '[:space:]')"
+  [[ "$aud_count" == "1" ]] || { echo "replay created a second AUD row" >&2; exit 1; }
+
+  local mismatch="$root/mismatch"
+  mkdir -p "$mismatch"
+  printf '%s' '{"cardOwnerId":"aud-owner","merchant":"  Cafe   Nero ","amount":"12.35","currency":"aud","txnDate":"2026-11-21","tax":"1.10"}' >"$mismatch/request.json"
+  code="$(post_json "$mismatch" "$BASE_URL/transactions" "aud-key-1" "$mismatch/request.json" "$api")"
+  [[ "$code" == "422" ]] || { echo "mismatch HTTP $code" >&2; exit 1; }
+  aud_count="$(psql_exec -tAc "SELECT count(*) FROM card_transactions WHERE card_owner_id = 'aud-owner'" | tr -d '[:space:]')"
+  [[ "$aud_count" == "1" ]] || { echo "mismatch created a row" >&2; exit 1; }
+
+  local jpy="$root/jpy"
+  mkdir -p "$jpy"
+  printf '%s' '{"cardOwnerId":"jpy-owner","merchant":"Cafe","amount":"500","currency":"JPY","txnDate":"2026-11-21"}' >"$jpy/request.json"
+  code="$(post_json "$jpy" "$BASE_URL/transactions" "jpy-key-1" "$jpy/request.json" "$api")"
+  [[ "$code" == "201" ]] || { echo "jpy HTTP $code" >&2; exit 1; }
+  local jpy_minor
+  jpy_minor="$(psql_exec -tAc "SELECT amount_minor FROM card_transactions WHERE card_owner_id = 'jpy-owner'" | tr -d '[:space:]')"
+  [[ "$jpy_minor" == "500" ]] || { echo "jpy minor was $jpy_minor" >&2; exit 1; }
+  local jpy_bad="$root/jpy-decimal"
+  mkdir -p "$jpy_bad"
+  printf '%s' '{"cardOwnerId":"jpy-bad-owner","merchant":"Cafe","amount":"500.0","currency":"JPY","txnDate":"2026-11-21"}' >"$jpy_bad/request.json"
+  code="$(post_json "$jpy_bad" "$BASE_URL/transactions" "jpy-bad-key" "$jpy_bad/request.json" "$api")"
+  [[ "$code" == "400" ]] || { echo "jpy decimal HTTP $code" >&2; exit 1; }
+
+  local document="$root/document"
+  mkdir -p "$document"
+  printf '%s' '{"kind":"RECEIPT","cardOwnerId":"doc-owner","merchant":"Cafe","amount":"9.99","currency":"AUD","docDate":"2026-11-21"}' >"$document/request.json"
+  code="$(post_json "$document" "$BASE_URL/documents" "doc-key-1" "$document/request.json" "$api")"
+  [[ "$code" == "201" ]] || { echo "document HTTP $code" >&2; exit 1; }
+  psql_exec -c "SELECT kind, amount_minor FROM documents WHERE card_owner_id = 'doc-owner'" >"$document/row.txt"
+  grep -q 'RECEIPT' "$document/row.txt" && grep -q '999' "$document/row.txt" || { echo "document row missing" >&2; exit 1; }
+
+  local inflight="$root/in-flight"
+  mkdir -p "$inflight"
+  printf '%s' '{"cardOwnerId":"inflight-owner","merchant":"Cafe","amount":"3.00","currency":"AUD","txnDate":"2026-11-21"}' >"$inflight/request.json"
+  local hash
+  hash="$(sha256sum "$inflight/request.json" | awk '{print $1}')"
+  printf '%s\n' "$hash" >"$inflight/request.sha256"
+  psql_exec -v hash="$hash" <<'SQL' >"$inflight/insert-stdout.txt" 2>"$inflight/insert-stderr.txt"
+INSERT INTO idempotency_keys (key, endpoint, request_hash)
+VALUES ('inflight-key', 'POST /transactions', :'hash');
+SQL
+  code="$(post_json "$inflight" "$BASE_URL/transactions" "inflight-key" "$inflight/request.json" "$api")"
+  [[ "$code" == "409" ]] || { echo "in-flight HTTP $code" >&2; exit 1; }
+  grep -qi '^retry-after: 1' "$inflight/headers.txt" || { echo "missing Retry-After: 1" >&2; cat "$inflight/headers.txt" >&2; exit 1; }
+  local inflight_rows
+  inflight_rows="$(psql_exec -tAc "SELECT count(*) FROM card_transactions WHERE card_owner_id = 'inflight-owner'" | tr -d '[:space:]')"
+  [[ "$inflight_rows" == "0" ]] || { echo "in-flight stored a transaction" >&2; exit 1; }
+
+  echo "ingest passed"
+}
+
 drive() {
   load_run
   local feature="${1:-}"
@@ -343,6 +577,7 @@ drive() {
     scalar) drive_scalar ;;
     schema) drive_schema ;;
     audit) drive_audit ;;
+    ingest) drive_ingest ;;
     *)
       echo "Unknown feature '$feature'." >&2
       usage

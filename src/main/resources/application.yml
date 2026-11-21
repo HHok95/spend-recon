@@ -5,6 +5,12 @@ spring:
     url: jdbc:postgresql://localhost:5432/spendrecon
     username: spendrecon
     password: spendrecon
+    hikari:
+      # Each in-flight write holds one connection until its idempotency row commits.
+      maximum-pool-size: 20
+  mvc:
+    problemdetails:
+      enabled: true
   jpa:
     # Flyway owns the schema. Hibernate only checks that it matches the entities.
     open-in-view: false
@@ -36,3 +42,13 @@ scalar:
   url: /v3/api-docs
   path: /scalar
   page-title: spend-recon
+
+# Local default, same idea as the database password in docker-compose.yml.
+# Override with RECON_API_KEY outside this machine.
+recon:
+  api-key: ${RECON_API_KEY:local-dev-key}
+  idempotency:
+    # A second request waits this long for the first transaction to store its response.
+    # If the wait expires, the response is 409 and Retry-After is retry-after.
+    lock-timeout: 5s
+    retry-after: 1s
