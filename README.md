@@ -31,6 +31,18 @@ docker compose up --build
 
 Postgres is published on `localhost:5432` as database `spendrecon`, user `spendrecon`, password `spendrecon`. Those values are local defaults.
 
+## Observability
+
+`docker compose up` also starts Prometheus and Grafana. They are part of this local stack. CI runs `./gradlew build` and does not start them.
+
+- Prometheus: http://localhost:9090
+  It scrapes `http://app:8080/actuator/prometheus` every 5 seconds. The job name is `spend-recon`. The targets page is http://localhost:9090/targets
+- Grafana: http://localhost:3000
+  User `admin`, password `admin`. That login is for this local Compose stack only. Do not reuse it on another machine.
+  Grafana loads `monitoring/grafana/dashboards/spend-recon.json` at startup. The dashboard is http://localhost:3000/d/spend-recon/spend-recon
+
+The dashboard has a panel for each metric in section 9 of the architecture. `idempotent_replays_total` has samples while the app is running, because ingest registers that counter. Matching, approval, and the outbox record the other six metrics in later pull requests. Those panels stay empty until the series exists. This stack does not publish stand-in series.
+
 ## Ingest
 
 `POST /transactions` and `POST /documents` need two headers:

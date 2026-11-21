@@ -1,6 +1,6 @@
 ---
 name: verify-spend-recon
-description: Verify the spend-recon HTTP API (health, Prometheus, Scalar at /scalar, the Flyway schema, the append-only audit table, and ingest with idempotency) against the Docker Compose stack. Use after a change to those routes or before claiming a later reconciliation feature works.
+description: Verify the spend-recon HTTP API (health, Prometheus, Scalar at /scalar, the Flyway schema, the append-only audit table, ingest with idempotency, and the local Grafana dashboard) against the Docker Compose stack. Use after a change to those routes or before claiming a later reconciliation feature works.
 ---
 
 # Verify spend-recon
@@ -11,9 +11,9 @@ The helper is `.cursor/skills/verify-spend-recon/scripts/spend-recon-verify`. Ru
 
 ## Launch
 
-One stack can run at a time. Compose publishes host ports `5432` and `8080`, and the recipes call `http://127.0.0.1:8080`. A second project cannot bind those ports.
+One stack can run at a time. Compose publishes host ports `5432`, `8080`, `9090`, and `3000`. The app recipes call `http://127.0.0.1:8080`. Prometheus is `http://127.0.0.1:9090`. Grafana is `http://127.0.0.1:3000`. A second project cannot bind those ports.
 
-From the repository root, with Docker running and both ports free:
+From the repository root, with Docker running and those ports free:
 
 ```bash
 export RUN_ID=proof1
@@ -49,8 +49,10 @@ It passes only when all of these are true:
 - `GET /actuator/health` with no `X-API-Key` returns 200 and `"status":"UP"`.
 - The highest successful Flyway version equals the highest `V<n>__*.sql` file, and no migration failed.
 - `GET /v3/api-docs` returns `"title":"spend-recon"`, which identifies this build.
+- The Prometheus container is running and publishes host port `9090`.
+- The Grafana container is running and publishes host port `3000`.
 
-Current read routes do not check an API key. A 200 without `X-API-Key` is the auth check for those routes. `POST /transactions` and `POST /documents` require `X-API-Key`. Do not treat an open read as proof of write authentication.
+Current read routes do not check an API key. A 200 without `X-API-Key` is the auth check for those routes. `POST /transactions` and `POST /documents` require `X-API-Key`. Do not treat an open read as proof of write authentication. Grafana's local login is `admin` / `admin`, for this Compose stack only.
 
 ## Drive
 
@@ -63,9 +65,10 @@ Follow `features/README.md`, then one feature file. The built commands are:
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive schema
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive audit
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive ingest
+.cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive grafana
 ```
 
-`drive scalar` is the API reference check: `GET /scalar` returns the Scalar page pointed at `/v3/api-docs`, and `GET /swagger-ui/index.html` returns 404. `drive ingest` posts transactions and documents with `X-API-Key: local-dev-key`. Reconcile, approve, reject, auto-approve, and outbox routes are listed in the map and must not be reported as verified.
+`drive scalar` is the API reference check: `GET /scalar` returns the Scalar page pointed at `/v3/api-docs`, and `GET /swagger-ui/index.html` returns 404. `drive ingest` posts transactions and documents with `X-API-Key: local-dev-key`. `drive grafana` checks that Prometheus reports the app target UP and that the provisioned Grafana dashboard returns `idempotent_replays_total`. Reconcile, approve, reject, auto-approve, and outbox routes are listed in the map and must not be reported as verified.
 
 ## Evidence
 
@@ -101,6 +104,7 @@ export RUN_ID=proof1
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify doctor
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive scalar
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive ingest
+.cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive grafana
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify evidence
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify cleanup
 ```
