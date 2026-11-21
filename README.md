@@ -42,6 +42,8 @@ The cluster name is `SPEND_RECON_KIND_CLUSTER`, default `spend-recon`. kind has 
 kubectl calls pass `--context kind-<cluster>` and `--kubeconfig .kube/kind-config`. They do not change the current context. `.kube/` is gitignored.
 
 `make kind-down` deletes the cluster these scripts created.
+The Postgres volume uses Retain. A deleted claim will not bind again, so recreate the data with `make kind-down && make kind-up`.
+A cluster created before this change has no ownership label and is refused. Remove it once with `kind delete cluster --name spend-recon`.
 
 The database password and `RECON_API_KEY` in `k8s/` are the same local defaults as Compose. They are not real credentials.
 

@@ -66,8 +66,7 @@ spec:
     spec:
       # postgres:16-alpine's default user is root. The entrypoint creates PGDATA,
       # chowns it to uid 70 and gid 70, then starts the server as that user.
-      # fsGroup 70 makes the kubelet mount this volume as group 70 so the server
-      # user can write it. fsGroup does not create the directory.
+      # fsGroup has no effect on hostPath. The kubelet does not apply it there.
       securityContext:
         fsGroup: 70
       containers:

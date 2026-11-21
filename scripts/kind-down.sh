@@ -51,7 +51,7 @@ case "$ownership" in
   owned)
     stop_our_port_forward
     echo "Deleting kind cluster ${CLUSTER}"
-    kind delete cluster --name "$CLUSTER"
+    kind delete cluster --name "$CLUSTER" --kubeconfig "$(kind_kubeconfig_file)"
     ;;
   foreign)
     kind_refuse_foreign delete

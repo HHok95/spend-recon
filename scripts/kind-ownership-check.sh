@@ -85,14 +85,25 @@ EOF
 cat >"$BIN/docker" <<'EOF'
 #!/usr/bin/env bash
 printf 'DOCKER %s\n' "$*" >>"$KIND_STUB_LOG"
-if [[ "${1:-}" == "build" ]]; then
+if [[ "${1:-}" == "build" && "${KIND_STUB_ALLOW_BUILD:-0}" != "1" ]]; then
   echo "docker build ran and this check did not expect it" >&2
   exit 1
 fi
 exit 0
 EOF
 
-chmod +x "$BIN/kind" "$BIN/kubectl" "$BIN/docker"
+cat >"$BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+printf 'CURL %s\n' "$*" >>"$KIND_STUB_LOG"
+if [[ "${KIND_STUB_CURL_UP:-0}" == "1" ]]; then
+  printf '%s\n' '{"status":"UP"}'
+  exit 0
+fi
+echo "curl ran and this check did not expect it" >&2
+exit 1
+EOF
+
+chmod +x "$BIN/kind" "$BIN/kubectl" "$BIN/docker" "$BIN/curl"
 
 export PATH="$BIN:$PATH"
 export KIND_STUB_LOG="$LOG"
@@ -166,6 +177,9 @@ reset_log
 export KIND_STUB_MARKER="kind-up.sh"
 "$ROOT/scripts/kind-down.sh" >/dev/null
 assert_present "DELETE cluster --name foreign-cluster"
+if ! grep -F "DELETE cluster --name foreign-cluster" "$LOG" | grep -F -e "--kubeconfig" >/dev/null; then
+  fail "kind delete missing --kubeconfig"
+fi
 assert_absent "other-project"
 assert_absent "CREATE"
 echo "PASS marked cluster is deleted by its own name"
@@ -199,6 +213,38 @@ if printf '%s\n' "$out" | grep -q "older than"; then
 fi
 assert_absent "CREATE"
 echo "PASS kind 0.24.0 is accepted and still refuses a foreign cluster"
+
+reset_log
+export KIND_STUB_VERSION="kind v0.33.0 go1.26.7 linux/amd64"
+export KIND_STUB_CLUSTERS=""
+export KIND_STUB_MARKER="kind-up.sh"
+export KIND_STUB_NODES_FAIL=0
+export KIND_STUB_ALLOW_BUILD=1
+export KIND_STUB_CURL_UP=1
+"$ROOT/scripts/kind-up.sh" >/dev/null
+assert_present "CREATE cluster --name foreign-cluster"
+assert_absent "DELETE"
+assert_absent "other-project"
+require_kubectl_flags() {
+  local needle="$1"
+  local line
+  line="$(grep -F "$needle" "$LOG" || true)"
+  if [[ -z "$line" ]]; then
+    fail "no kubectl call containing: ${needle}"
+  fi
+  if ! printf '%s\n' "$line" | grep -F -e "--context kind-foreign-cluster" >/dev/null; then
+    fail "${needle} missing --context"
+  fi
+  if ! printf '%s\n' "$line" | grep -F -e "--kubeconfig" >/dev/null; then
+    fail "${needle} missing --kubeconfig"
+  fi
+}
+require_kubectl_flags "apply -k"
+require_kubectl_flags "rollout status deployment/postgres"
+require_kubectl_flags "rollout status deployment/spend-recon"
+require_kubectl_flags "port-forward --address 127.0.0.1 svc/spend-recon"
+unset KIND_STUB_ALLOW_BUILD KIND_STUB_CURL_UP
+echo "PASS missing cluster is created with context on apply, rollout, and port-forward"
 
 if grep -n "use-context" \
   "$ROOT/scripts/kind-up.sh" \

@@ -78,7 +78,7 @@ if [[ "$creating" -eq 1 ]]; then
   if ! kind_mark_nodes; then
     echo "Created ${CLUSTER} but could not label its nodes ${KIND_MARKER_KEY}=${KIND_MARKER_VALUE}." >&2
     echo "Deleting this new cluster so it is not left unmarked." >&2
-    kind delete cluster --name "$CLUSTER"
+    kind delete cluster --name "$CLUSTER" --kubeconfig "$(kind_kubeconfig_file)"
     exit 1
   fi
 fi
