@@ -1,6 +1,9 @@
-# Postgres 16 for the local kind cluster only.
-# kind does not ship a volume provisioner, so this PersistentVolume is a
-# hostPath on the kind node. Deleting the cluster deletes the node and the files.
+# Postgres 16 for the local kind cluster.
+# This PersistentVolume is a hostPath on the kind node, bound by name to the claim.
+# kind also installs a local-path StorageClass. These manifests do not use it, so
+# the database does not depend on that provisioner.
+# Retain keeps the volume object if the claim is deleted. The files live inside
+# the kind node and disappear when that node container is removed.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -14,7 +17,7 @@ spec:
   volumeMode: Filesystem
   accessModes:
     - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Delete
+  persistentVolumeReclaimPolicy: Retain
   storageClassName: spend-recon-local
   hostPath:
     path: /var/local/spend-recon/postgres
@@ -61,8 +64,10 @@ spec:
         app.kubernetes.io/name: spend-recon
         app.kubernetes.io/component: postgres
     spec:
-      # postgres:16-alpine runs the server as uid 70. The entrypoint starts as root
-      # and creates PGDATA. fsGroup lets that directory stay writable after restart.
+      # postgres:16-alpine's default user is root. The entrypoint creates PGDATA,
+      # chowns it to uid 70 and gid 70, then starts the server as that user.
+      # fsGroup 70 makes the kubelet mount this volume as group 70 so the server
+      # user can write it. fsGroup does not create the directory.
       securityContext:
         fsGroup: 70
       containers:

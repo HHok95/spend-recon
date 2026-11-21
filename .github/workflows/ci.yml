@@ -32,7 +32,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$PWD/k8s:/k8s:ro" \
-            ghcr.io/yannh/kubeconform:v0.6.7 \
+            ghcr.io/yannh/kubeconform:v0.6.7@sha256:0925177fb05b44ce18574076141b5c3d83235e1904d3f952182ac99ddc45762c \
             -strict \
             -summary \
             -kubernetes-version 1.32.0 \
