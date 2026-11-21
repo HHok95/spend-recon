@@ -48,12 +48,12 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Scalar API reference](./scalar.md) covers `GET /scalar` rendering the springdoc document at `/v3/api-docs`, and the absence of Swagger UI.
 - [Migrated schema](./schema.md) covers Flyway V1, the six tables, no duplicate-check column, and the one-live-match index.
 - [Append-only audit log](./audit-log.md) covers `UPDATE` and `DELETE` on `reconciliation_events` failing while the row stays.
+- [Ingest](./ingest.md) covers `POST /transactions` and `POST /documents`, the API key, decimal-string amounts, and idempotency.
 
 ## Planned features
 
 These are specified in `docs/ARCHITECTURE.md` and are not implemented. Do not drive them and do not record a pass. A later PR replaces each entry with a feature file once the route exists.
 
-- Ingest with idempotency. `POST /transactions` and `POST /documents`, with `X-API-Key` and `Idempotency-Key`. Not built.
 - Reconcile. `POST /reconcile/{txnId}` returns the match id, status, score, and rules fired. Not built.
 - Approve and reject. `POST /matches/{id}/approve` and `POST /matches/{id}/reject`. A stale `version` returns 409. Not built.
 - Auto-approve audit. A `MATCHED` score at or above the threshold writes an audit event with actor `system:auto-approve`. Not built.
