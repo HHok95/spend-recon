@@ -9,7 +9,7 @@ COMPOSE_FILE="$ROOT/docker-compose.yml"
 
 usage() {
   echo "usage: RUN_ID=<id> $0 launch|doctor|drive <feature>|evidence|cleanup" >&2
-  echo "features: health prometheus scalar schema audit ingest reconcile" >&2
+  echo "features: health prometheus scalar schema audit ingest reconcile grafana" >&2
   exit 2
 }
 
@@ -123,10 +123,12 @@ RUN_ID=$RUN_ID
 PROJECT=$PROJECT
 EVIDENCE_DIR=$EVIDENCE_DIR
 BASE_URL=$BASE_URL
+PROM_URL=http://127.0.0.1:9090
+GRAFANA_URL=http://127.0.0.1:3000
 EOF
 
-  if port_open 8080 || port_open 5432; then
-    echo "127.0.0.1:8080 or :5432 is already open." >&2
+  if port_open 8080 || port_open 5432 || port_open 9090 || port_open 3000; then
+    echo "127.0.0.1:8080, :5432, :9090, or :3000 is already open." >&2
     echo "This skill publishes those fixed ports, so only one stack can run." >&2
     exit 1
   fi
@@ -160,7 +162,7 @@ EOF
     echo "If the app log says 'Connect timed out' while Postgres is healthy, this host's legacy iptables FORWARD policy may be DROP. A normal Docker install does not need a change. On this kind of VM: sudo iptables-legacy -P FORWARD ACCEPT" >&2
     exit 1
   fi
-  echo "Ready at $BASE_URL (flyway version $version, no failed migrations). Evidence: $EVIDENCE_DIR"
+  echo "Ready at $BASE_URL (flyway version $version, no failed migrations). Prometheus http://127.0.0.1:9090 Grafana http://127.0.0.1:3000. Evidence: $EVIDENCE_DIR"
 }
 
 check() {
@@ -235,11 +237,40 @@ doctor() {
     check "openapi title is spend-recon" 1
   fi
 
+  local prom_id graf_id
+  prom_id="$(compose ps -q prometheus)"
+  if [[ -n "$prom_id" ]] && [[ "$(docker inspect -f '{{.State.Running}}' "$prom_id")" == "true" ]]; then
+    check "prometheus container running" 0
+  else
+    check "prometheus container running" 1
+  fi
+  port_owner="$(docker ps -q --no-trunc --filter publish=9090)"
+  printf '%s\n' "$port_owner" >"$EVIDENCE_DIR/doctor/port-9090-owner.txt"
+  if [[ -n "$prom_id" && "$port_owner" == "$prom_id" ]]; then
+    check "port 9090 is owned by this prometheus container" 0
+  else
+    check "port 9090 is owned by this prometheus container" 1
+  fi
+
+  graf_id="$(compose ps -q grafana)"
+  if [[ -n "$graf_id" ]] && [[ "$(docker inspect -f '{{.State.Running}}' "$graf_id")" == "true" ]]; then
+    check "grafana container running" 0
+  else
+    check "grafana container running" 1
+  fi
+  port_owner="$(docker ps -q --no-trunc --filter publish=3000)"
+  printf '%s\n' "$port_owner" >"$EVIDENCE_DIR/doctor/port-3000-owner.txt"
+  if [[ -n "$graf_id" && "$port_owner" == "$graf_id" ]]; then
+    check "port 3000 is owned by this grafana container" 0
+  else
+    check "port 3000 is owned by this grafana container" 1
+  fi
+
   if [[ "$DOCTOR_FAILED" -ne 0 ]]; then
     echo "Doctor failed. See $EVIDENCE_DIR/doctor/doctor.txt" >&2
     exit 1
   fi
-  echo "Doctor passed. Read routes do not require an API key. POST /transactions, POST /documents, and POST /reconcile/{txnId} do."
+  echo "Doctor passed. Read routes do not require an API key. POST /transactions, POST /documents, and POST /reconcile/{txnId} do. Grafana's local login is admin / admin."
 }
 
 curl_capture() {
@@ -773,6 +804,191 @@ PY
   echo "reconcile passed"
 }
 
+# Sum of idempotent_replays_total samples in a Prometheus text scrape.
+# Exits 1 when the metric line is absent.
+counter_value() {
+  awk '
+    /^#/ { next }
+    $1 ~ /^idempotent_replays_total($|\{)/ { sum += $NF; seen = 1 }
+    END {
+      if (!seen) exit 1
+      printf "%.0f\n", sum + 0
+    }
+  ' "$1"
+}
+
+target_is_up() {
+  python3 - "$1" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+for target in doc.get("data", {}).get("activeTargets", []):
+    url = target.get("scrapeUrl") or ""
+    job = (target.get("labels") or {}).get("job")
+    if job == "spend-recon" and target.get("health") == "up" and "app:8080/actuator/prometheus" in url:
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+prom_query_matches() {
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+want = float(sys.argv[2])
+if doc.get("status") != "success":
+    sys.exit(1)
+total = 0.0
+seen = False
+for item in doc.get("data", {}).get("result", []):
+    value = item.get("value")
+    if isinstance(value, list) and len(value) >= 2:
+        total += float(value[1])
+        seen = True
+sys.exit(0 if seen and abs(total - want) < 0.001 else 1)
+PY
+}
+
+drive_grafana() {
+  local dir="$EVIDENCE_DIR/grafana"
+  local prom="http://127.0.0.1:9090"
+  local graf="http://127.0.0.1:3000"
+  local user="admin"
+  local pass="admin"
+  mkdir -p "$dir"
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 is required to read the Prometheus and Grafana JSON." >&2
+    exit 1
+  fi
+
+  {
+    echo "curl $BASE_URL/actuator/health"
+    echo "curl $BASE_URL/actuator/prometheus"
+    echo "curl $prom/api/v1/targets"
+    echo "curl $prom/api/v1/query?query=idempotent_replays_total"
+    echo "curl -u ${user}:${pass} $graf/api/dashboards/uid/spend-recon"
+    echo "curl -u ${user}:${pass} $graf/api/ds/query expr=idempotent_replays_total"
+    echo "POST $BASE_URL/transactions Idempotency-Key: grafana-replay-1 twice"
+  } >"$dir/command.txt"
+
+  local code
+  code="$(curl_capture "$dir/health" "$BASE_URL/actuator/health" "$dir/health/body.json" "$dir/health/http-status.txt")"
+  [[ "$code" == "200" ]] || { echo "health HTTP $code" >&2; exit 1; }
+  grep -q '"status":"UP"' "$dir/health/body.json" || { echo "health was not UP" >&2; exit 1; }
+
+  code="$(curl_capture "$dir/app-prometheus" "$BASE_URL/actuator/prometheus" "$dir/app-prometheus/body.txt" "$dir/app-prometheus/http-status.txt")"
+  [[ "$code" == "200" ]] || { echo "app prometheus HTTP $code" >&2; exit 1; }
+  local before
+  before="$(counter_value "$dir/app-prometheus/body.txt")" || { echo "app scrape has no idempotent_replays_total" >&2; exit 1; }
+  printf '%s\n' "$before" >"$dir/replay-count-before.txt"
+
+  local replay="$dir/replay"
+  printf '%s' '{"cardOwnerId":"grafana-replay-owner","merchant":"Cafe","amount":"1.00","currency":"AUD","txnDate":"2026-11-21"}' >"$dir/replay-request.json"
+  code="$(post_json "$replay/first" "$BASE_URL/transactions" "grafana-replay-1" "$dir/replay-request.json")"
+  [[ "$code" == "201" ]] || { echo "first replay post HTTP $code" >&2; exit 1; }
+  code="$(post_json "$replay/second" "$BASE_URL/transactions" "grafana-replay-1" "$dir/replay-request.json")"
+  [[ "$code" == "201" ]] || { echo "second replay post HTTP $code" >&2; exit 1; }
+  python3 - "$replay/first/body.json" "$replay/second/body.json" <<'PY' || { echo "replay ids differ" >&2; exit 1; }
+import json, sys
+first = json.load(open(sys.argv[1]))
+second = json.load(open(sys.argv[2]))
+sys.exit(0 if first.get("id") and first["id"] == second.get("id") else 1)
+PY
+
+  code="$(curl_capture "$dir/app-prometheus-after" "$BASE_URL/actuator/prometheus" "$dir/app-prometheus-after/body.txt" "$dir/app-prometheus-after/http-status.txt")"
+  [[ "$code" == "200" ]] || { echo "app prometheus after HTTP $code" >&2; exit 1; }
+  local after
+  after="$(counter_value "$dir/app-prometheus-after/body.txt")" || { echo "app scrape lost idempotent_replays_total" >&2; exit 1; }
+  printf '%s\n' "$after" >"$dir/replay-count-after.txt"
+  [[ "$after" -eq $((before + 1)) ]] || { echo "idempotent_replays_total went from $before to $after, expected +1. Use a fresh RUN_ID." >&2; exit 1; }
+
+  local i up=0
+  for i in $(seq 1 45); do
+    code="$(curl -sS --max-time 5 -o "$dir/targets.json" -w '%{http_code}' "$prom/api/v1/targets" 2>"$dir/targets.stderr" || true)"
+    if [[ "$code" == "200" ]] && target_is_up "$dir/targets.json"; then
+      up=1
+      break
+    fi
+    sleep 2
+  done
+  [[ "$up" -eq 1 ]] || { echo "prometheus target spend-recon was not UP" >&2; exit 1; }
+
+  local query_ok=0
+  local query_url="$prom/api/v1/query?query=idempotent_replays_total"
+  for i in $(seq 1 45); do
+    code="$(curl -sS --max-time 5 -G -o "$dir/prometheus-query.json" -w '%{http_code}' --data-urlencode 'query=idempotent_replays_total' "$prom/api/v1/query" 2>"$dir/prometheus-query.stderr" || true)"
+    if [[ "$code" == "200" ]] && prom_query_matches "$dir/prometheus-query.json" "$after"; then
+      query_ok=1
+      break
+    fi
+    sleep 2
+  done
+  printf '%s\n' "$query_url" >"$dir/prometheus-query-url.txt"
+  [[ "$query_ok" -eq 1 ]] || { echo "prometheus query did not return idempotent_replays_total $after" >&2; exit 1; }
+
+  local graf_ok=0
+  for i in $(seq 1 45); do
+    code="$(curl -sS --max-time 5 -u "$user:$pass" -o "$dir/dashboard.json" -w '%{http_code}' "$graf/api/dashboards/uid/spend-recon" 2>"$dir/dashboard.stderr" || true)"
+    if [[ "$code" == "200" ]] && grep -q '"uid"[[:space:]]*:[[:space:]]*"spend-recon"' "$dir/dashboard.json"; then
+      graf_ok=1
+      break
+    fi
+    sleep 2
+  done
+  printf '%s\n' "$code" >"$dir/dashboard-status.txt"
+  [[ "$graf_ok" -eq 1 ]] || { echo "grafana dashboard HTTP $code" >&2; exit 1; }
+  local metric
+  for metric in recon_matches_total recon_match_latency_seconds recon_exceptions_total idempotent_replays_total recon_auto_approvals_total optimistic_lock_conflicts_total outbox_lag_seconds; do
+    grep -q "$metric" "$dir/dashboard.json" || { echo "dashboard missing $metric" >&2; exit 1; }
+  done
+
+  cat >"$dir/query.json" <<'JSON'
+{
+  "from": "now-15m",
+  "to": "now",
+  "queries": [
+    {
+      "refId": "A",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "expr": "idempotent_replays_total",
+      "instant": true,
+      "range": false,
+      "intervalMs": 15000,
+      "maxDataPoints": 1
+    }
+  ]
+}
+JSON
+  code="$(curl -sS --max-time 15 -u "$user:$pass" -H 'Content-Type: application/json' -d @"$dir/query.json" -o "$dir/grafana-query.json" -w '%{http_code}' "$graf/api/ds/query" 2>"$dir/grafana-query.stderr" || true)"
+  printf '%s\n' "$code" >"$dir/grafana-query-status.txt"
+  [[ "$code" == "200" ]] || { echo "grafana query HTTP $code" >&2; exit 1; }
+  python3 - "$dir/grafana-query.json" "$after" <<'PY' || { echo "grafana query did not return idempotent_replays_total $after" >&2; exit 1; }
+import json, sys
+doc = json.load(open(sys.argv[1]))
+want = float(sys.argv[2])
+result = doc.get("results", {}).get("A", {})
+if result.get("error"):
+    print(result["error"], file=sys.stderr)
+    sys.exit(1)
+status = result.get("status", 200)
+if status not in (200, "200"):
+    sys.exit(1)
+total = 0.0
+seen = False
+for frame in result.get("frames") or []:
+    values = (frame.get("data") or {}).get("values") or []
+    if len(values) < 2:
+        continue
+    for value in values[1]:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            total += float(value)
+            seen = True
+if not seen or abs(total - want) >= 0.001:
+    print(f"grafana total={total if seen else 'none'} want={want}", file=sys.stderr)
+    sys.exit(1)
+PY
+  echo "grafana passed"
+}
+
 drive() {
   load_run
   local feature="${1:-}"
@@ -784,6 +1000,7 @@ drive() {
     audit) drive_audit ;;
     ingest) drive_ingest ;;
     reconcile) drive_reconcile ;;
+    grafana) drive_grafana ;;
     *)
       echo "Unknown feature '$feature'." >&2
       usage
