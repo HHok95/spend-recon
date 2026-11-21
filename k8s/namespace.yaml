@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spend-recon
+  labels:
+    app.kubernetes.io/name: spend-recon
+    app.kubernetes.io/part-of: spend-recon

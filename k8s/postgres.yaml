@@ -1,0 +1,139 @@
+# Postgres 16 for the local kind cluster only.
+# kind does not ship a volume provisioner, so this PersistentVolume is a
+# hostPath on the kind node. Deleting the cluster deletes the node and the files.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: spend-recon-postgres
+  labels:
+    app.kubernetes.io/name: spend-recon
+    app.kubernetes.io/component: postgres
+spec:
+  capacity:
+    storage: 1Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Delete
+  storageClassName: spend-recon-local
+  hostPath:
+    path: /var/local/spend-recon/postgres
+    type: DirectoryOrCreate
+  claimRef:
+    namespace: spend-recon
+    name: postgres-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  labels:
+    app.kubernetes.io/name: spend-recon
+    app.kubernetes.io/component: postgres
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: spend-recon-local
+  volumeName: spend-recon-postgres
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: spend-recon
+    app.kubernetes.io/component: postgres
+spec:
+  replicas: 1
+  # One ReadWriteOnce volume. A rolling update would try to mount it twice.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spend-recon
+      app.kubernetes.io/component: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spend-recon
+        app.kubernetes.io/component: postgres
+    spec:
+      # postgres:16-alpine runs the server as uid 70. The entrypoint starts as root
+      # and creates PGDATA. fsGroup lets that directory stay writable after restart.
+      securityContext:
+        fsGroup: 70
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: spend-recon-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: spend-recon-config
+                  key: POSTGRES_USER
+            - name: PGDATA
+              valueFrom:
+                configMapKeyRef:
+                  name: spend-recon-config
+                  key: PGDATA
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: spend-recon-local
+                  key: POSTGRES_PASSWORD
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "spendrecon", "-d", "spendrecon"]
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "spendrecon", "-d", "spendrecon"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: spend-recon
+    app.kubernetes.io/component: postgres
+spec:
+  selector:
+    app.kubernetes.io/name: spend-recon
+    app.kubernetes.io/component: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

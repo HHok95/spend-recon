@@ -31,6 +31,16 @@ docker compose up --build
 
 Postgres is published on `localhost:5432` as database `spendrecon`, user `spendrecon`, password `spendrecon`. Those values are local defaults.
 
+## Kubernetes (kind)
+
+Docker, kind, and kubectl are required.
+
+`make kind-up` starts a Kubernetes cluster in Docker on this machine, builds the app image, and forwards the API to http://localhost:8080. Postgres 16 runs in that cluster. Flyway applies the migrations when the app process starts, the same way it does under Compose. Prometheus and Grafana stay on Compose.
+
+`make kind-down` deletes that cluster.
+
+The database password and `RECON_API_KEY` in `k8s/` are the same local defaults as Compose. They are not real credentials.
+
 ## Observability
 
 `docker compose up` also starts Prometheus and Grafana. They are part of this local stack. CI runs `./gradlew build` and does not start them.

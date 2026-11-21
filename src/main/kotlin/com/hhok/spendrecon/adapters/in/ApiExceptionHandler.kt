@@ -85,8 +85,9 @@ class ApiExceptionHandler(
     }
 
     /**
-     * DeadlockLoserDataAccessException is a CannotAcquireLockException, and that
-     * is a PessimisticLockingFailureException. The loser retries instead of seeing 500.
+     * DeadlockLoserDataAccessException is a child of PessimisticLockingFailureException,
+     * not CannotAcquireLockException. The handler lists the parent so a deadlock
+     * loser gets 409 and retries, instead of a 500.
      */
     @ExceptionHandler(CannotAcquireLockException::class, PessimisticLockingFailureException::class)
     fun lockNotAcquired(): ResponseEntity<String> {

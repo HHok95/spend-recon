@@ -1,0 +1,7 @@
+# Local kind cluster for spend-recon.
+# nftables kube-proxy does not need the kernel xt_statistic match. The iptables
+# proxy does, and a kernel without that match installs no Service rules.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  kubeProxyMode: nftables

@@ -26,6 +26,16 @@ jobs:
             exit 1
           fi
       - uses: actions/checkout@v4
+      - name: Validate Kubernetes manifests
+        run: |
+          docker run --rm \
+            -v "$PWD/k8s:/k8s:ro" \
+            ghcr.io/yannh/kubeconform:v0.6.7 \
+            -strict \
+            -summary \
+            -kubernetes-version 1.32.0 \
+            -skip Kustomization \
+            /k8s
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

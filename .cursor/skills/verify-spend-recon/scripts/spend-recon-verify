@@ -9,7 +9,7 @@ COMPOSE_FILE="$ROOT/docker-compose.yml"
 
 usage() {
   echo "usage: RUN_ID=<id> $0 launch|doctor|drive <feature>|evidence|cleanup" >&2
-  echo "features: health prometheus scalar schema audit ingest reconcile decisions grafana" >&2
+  echo "features: health prometheus scalar schema audit ingest reconcile decisions grafana kind" >&2
   exit 2
 }
 
@@ -1237,9 +1237,114 @@ PY
   echo "grafana passed"
 }
 
+drive_kind() {
+  require_run_id
+  EVIDENCE_DIR="$(evidence_dir)"
+  BASE_URL="http://127.0.0.1:${KIND_HOST_PORT:-8080}"
+  mkdir -p "$EVIDENCE_DIR/kind"
+  cat >"$EVIDENCE_DIR/run.env" <<EOF
+RUN_ID=$RUN_ID
+PROJECT=kind
+EVIDENCE_DIR=$EVIDENCE_DIR
+BASE_URL=$BASE_URL
+KIND_CLUSTER=${KIND_CLUSTER_NAME:-spend-recon}
+EOF
+
+  kind_down_once() {
+    if [[ "${KIND_DOWN_DONE:-0}" -eq 1 ]]; then
+      return 0
+    fi
+    KIND_DOWN_DONE=1
+    "$ROOT/scripts/kind-down.sh" >"$EVIDENCE_DIR/kind/down.txt" 2>&1
+  }
+  trap 'status=$?; kind_down_once || status=1; exit "$status"' EXIT
+
+  echo "Removing any previous kind cluster named ${KIND_CLUSTER_NAME:-spend-recon}"
+  "$ROOT/scripts/kind-down.sh" >"$EVIDENCE_DIR/kind/down-before.txt" 2>&1 || true
+
+  echo "Starting kind"
+  "$ROOT/scripts/kind-up.sh" 2>&1 | tee "$EVIDENCE_DIR/kind/up.txt"
+
+  local code
+  echo "curl $BASE_URL/actuator/health" >"$EVIDENCE_DIR/kind/health-command.txt"
+  code="$(curl_capture "$EVIDENCE_DIR/kind/health" "$BASE_URL/actuator/health" "$EVIDENCE_DIR/kind/health/body.json" "$EVIDENCE_DIR/kind/health/http-status.txt")"
+  [[ "$code" == "200" ]] || { echo "kind health HTTP $code" >&2; exit 1; }
+  grep -q '"status":"UP"' "$EVIDENCE_DIR/kind/health/body.json" || { echo "kind health was not UP" >&2; exit 1; }
+
+  code="$(curl_capture "$EVIDENCE_DIR/kind/liveness" "$BASE_URL/actuator/health/liveness" "$EVIDENCE_DIR/kind/liveness/body.json" "$EVIDENCE_DIR/kind/liveness/http-status.txt")"
+  [[ "$code" == "200" ]] || { echo "kind liveness HTTP $code" >&2; exit 1; }
+  grep -q '"status":"UP"' "$EVIDENCE_DIR/kind/liveness/body.json" || { echo "kind liveness was not UP" >&2; exit 1; }
+
+  code="$(curl_capture "$EVIDENCE_DIR/kind/readiness" "$BASE_URL/actuator/health/readiness" "$EVIDENCE_DIR/kind/readiness/body.json" "$EVIDENCE_DIR/kind/readiness/http-status.txt")"
+  [[ "$code" == "200" ]] || { echo "kind readiness HTTP $code" >&2; exit 1; }
+  grep -q '"status":"UP"' "$EVIDENCE_DIR/kind/readiness/body.json" || { echo "kind readiness was not UP" >&2; exit 1; }
+
+  local root="$EVIDENCE_DIR/kind/reconcile"
+  local api="local-dev-key"
+  mkdir -p "$root"
+  printf '%s' '{"cardOwnerId":"kind-owner","merchant":"Cafe Nero","amount":"12.34","currency":"AUD","txnDate":"2026-11-21","tax":"1.10"}' >"$root/txn.json"
+  code="$(post_json "$root/txn" "$BASE_URL/transactions" "kind-txn" "$root/txn.json" "$api")"
+  [[ "$code" == "201" ]] || { echo "kind transaction HTTP $code" >&2; cat "$root/txn/body.json" >&2; exit 1; }
+  printf '%s' '{"kind":"RECEIPT","cardOwnerId":"kind-owner","merchant":"Cafe Nero","amount":"12.34","currency":"AUD","docDate":"2026-11-21","tax":"1.10"}' >"$root/doc.json"
+  code="$(post_json "$root/doc" "$BASE_URL/documents" "kind-doc" "$root/doc.json" "$api")"
+  [[ "$code" == "201" ]] || { echo "kind document HTTP $code" >&2; cat "$root/doc/body.json" >&2; exit 1; }
+
+  local txn_id
+  txn_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$root/txn/body.json")"
+  code="$(reconcile_empty "$root/auto" "$BASE_URL/reconcile/$txn_id" "kind-recon")"
+  [[ "$code" == "200" ]] || { echo "kind reconcile HTTP $code" >&2; cat "$root/auto/body.json" >&2; exit 1; }
+  local match_id
+  match_id="$(python3 - "$root/auto/body.json" <<'PY'
+import json, pathlib, sys
+body = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if body.get("status") != "APPROVED":
+    raise SystemExit(f"status {body.get('status')}")
+score = body.get("score")
+if score is None or abs(float(score) - 1.0) > 0.0001:
+    raise SystemExit(f"score {score}")
+print(body["matchId"])
+PY
+)"
+  code="$(get_url "$root/history" "$BASE_URL/matches/$match_id/history")"
+  [[ "$code" == "200" ]] || { echo "kind history HTTP $code" >&2; exit 1; }
+  python3 - "$root/history/body.json" <<'PY'
+import json, pathlib, sys
+events = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if len(events) != 2:
+    raise SystemExit(f"history length {len(events)}")
+if events[0].get("eventType") != "MATCHED" or events[0].get("actor") != "system:matching":
+    raise SystemExit(f"first event {events[0]}")
+if events[1].get("eventType") != "APPROVED" or events[1].get("actor") != "system:auto-approve":
+    raise SystemExit(f"second event {events[1]}")
+PY
+
+  local expected version failed
+  expected="$(highest_migration_version)"
+  kubectl -n spend-recon exec deploy/postgres -- env PGPASSWORD=spendrecon \
+    psql -v ON_ERROR_STOP=1 -U spendrecon -d spendrecon -tAc \
+    "SELECT max(version::int) FROM flyway_schema_history WHERE success" \
+    >"$EVIDENCE_DIR/kind/flyway-version.txt"
+  kubectl -n spend-recon exec deploy/postgres -- env PGPASSWORD=spendrecon \
+    psql -v ON_ERROR_STOP=1 -U spendrecon -d spendrecon -tAc \
+    "SELECT count(*) FROM flyway_schema_history WHERE success = false" \
+    >"$EVIDENCE_DIR/kind/flyway-failed.txt"
+  version="$(tr -d '[:space:]' <"$EVIDENCE_DIR/kind/flyway-version.txt")"
+  failed="$(tr -d '[:space:]' <"$EVIDENCE_DIR/kind/flyway-failed.txt")"
+  [[ "$version" == "$expected" && "$failed" == "0" ]] \
+    || { echo "kind flyway version ${version:-none}, expected $expected, failed rows ${failed:-unknown}" >&2; exit 1; }
+
+  echo "Checks passed. Deleting the cluster."
+  kind_down_once
+  echo "kind passed"
+}
+
 drive() {
-  load_run
   local feature="${1:-}"
+  if [[ "$feature" == "kind" ]]; then
+    drive_kind
+    return
+  fi
+  load_run
   case "$feature" in
     health) drive_health ;;
     prometheus) drive_prometheus ;;
