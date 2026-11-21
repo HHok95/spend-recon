@@ -1239,6 +1239,10 @@ PY
 
 drive_kind() {
   require_run_id
+  # shellcheck source=../../../../scripts/kind-lib.sh
+  source "$ROOT/scripts/kind-lib.sh"
+  local cluster
+  cluster="$(kind_cluster_name)"
   EVIDENCE_DIR="$(evidence_dir)"
   BASE_URL="http://127.0.0.1:${KIND_HOST_PORT:-8080}"
   mkdir -p "$EVIDENCE_DIR/kind"
@@ -1247,7 +1251,7 @@ RUN_ID=$RUN_ID
 PROJECT=kind
 EVIDENCE_DIR=$EVIDENCE_DIR
 BASE_URL=$BASE_URL
-KIND_CLUSTER=${KIND_CLUSTER_NAME:-spend-recon}
+KIND_CLUSTER=$cluster
 EOF
 
   kind_down_once() {
@@ -1255,12 +1259,12 @@ EOF
       return 0
     fi
     KIND_DOWN_DONE=1
-    "$ROOT/scripts/kind-down.sh" >"$EVIDENCE_DIR/kind/down.txt" 2>&1
+    "$ROOT/scripts/kind-down.sh" 2>&1 | tee "$EVIDENCE_DIR/kind/down.txt"
   }
   trap 'status=$?; kind_down_once || status=1; exit "$status"' EXIT
 
-  echo "Removing any previous kind cluster named ${KIND_CLUSTER_NAME:-spend-recon}"
-  "$ROOT/scripts/kind-down.sh" >"$EVIDENCE_DIR/kind/down-before.txt" 2>&1 || true
+  echo "Removing a previous kind cluster named ${cluster} when this repo created it."
+  "$ROOT/scripts/kind-down.sh" 2>&1 | tee "$EVIDENCE_DIR/kind/down-before.txt"
 
   echo "Starting kind"
   "$ROOT/scripts/kind-up.sh" 2>&1 | tee "$EVIDENCE_DIR/kind/up.txt"
@@ -1320,11 +1324,11 @@ PY
 
   local expected version failed
   expected="$(highest_migration_version)"
-  kubectl -n spend-recon exec deploy/postgres -- env PGPASSWORD=spendrecon \
+  kind_kubectl -n "$SPEND_RECON_NAMESPACE" exec deploy/postgres -- env PGPASSWORD=spendrecon \
     psql -v ON_ERROR_STOP=1 -U spendrecon -d spendrecon -tAc \
     "SELECT max(version::int) FROM flyway_schema_history WHERE success" \
     >"$EVIDENCE_DIR/kind/flyway-version.txt"
-  kubectl -n spend-recon exec deploy/postgres -- env PGPASSWORD=spendrecon \
+  kind_kubectl -n "$SPEND_RECON_NAMESPACE" exec deploy/postgres -- env PGPASSWORD=spendrecon \
     psql -v ON_ERROR_STOP=1 -U spendrecon -d spendrecon -tAc \
     "SELECT count(*) FROM flyway_schema_history WHERE success = false" \
     >"$EVIDENCE_DIR/kind/flyway-failed.txt"

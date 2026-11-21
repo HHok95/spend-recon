@@ -26,6 +26,8 @@ jobs:
             exit 1
           fi
       - uses: actions/checkout@v4
+      - name: Check kind cluster ownership guards
+        run: ./scripts/kind-ownership-check.sh
       - name: Validate Kubernetes manifests
         run: |
           docker run --rm \

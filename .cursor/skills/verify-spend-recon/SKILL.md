@@ -75,14 +75,14 @@ Follow `features/README.md`, then one feature file. The built commands are:
 
 ## Kind
 
-`drive kind` does not use Compose, `launch`, or `doctor`. It deletes any kind cluster named `spend-recon`, creates a new one, builds the image, loads it into the node, applies `k8s/`, and port-forwards the API to `http://127.0.0.1:8080`. It then checks health, liveness, and readiness, posts one charge and one matching receipt, reconciles them to `APPROVED`, checks that Flyway applied every migration, and deletes the cluster. Prometheus and Grafana are not in this cluster.
+`drive kind` does not use Compose, `launch`, or `doctor`. The cluster name comes from `SPEND_RECON_KIND_CLUSTER` (default `spend-recon`). It deletes that cluster only when a node has the label `spend-recon.io/created-by=kind-up.sh`. A cluster without that label stops the drive and is left in place. It then creates the cluster, builds the image, loads it into the node, applies `k8s/`, and port-forwards the API to `http://127.0.0.1:8080`. It checks health, liveness, and readiness, posts one charge and one matching receipt, reconciles them to `APPROVED`, checks that Flyway applied every migration, and deletes the cluster. Prometheus and Grafana are not in this cluster.
 
 ```bash
 export RUN_ID=kind1
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive kind
 ```
 
-Host port `8080` must be free. Docker, `kind`, and `kubectl` must be on `PATH`. The cluster name is `spend-recon`. The drive deletes that cluster, including when a check fails.
+Host port `8080` must be free. Docker, `kind` 0.24.0 or newer, and `kubectl` must be on `PATH`. The drive deletes the cluster when a check fails, and only if `kind-up.sh` labeled it. kubectl calls pass `--context kind-<cluster>` and do not change the current context.
 
 ## Evidence
 
