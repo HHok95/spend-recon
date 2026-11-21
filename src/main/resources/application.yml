@@ -1,0 +1,38 @@
+spring:
+  application:
+    name: spend-recon
+  datasource:
+    url: jdbc:postgresql://localhost:5432/spendrecon
+    username: spendrecon
+    password: spendrecon
+  jpa:
+    # Flyway owns the schema. Hibernate only checks that it matches the entities.
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  flyway:
+    enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+
+# Scalar's default document is a public demo. Point it at the spec springdoc generates.
+scalar:
+  url: /v3/api-docs
+  path: /scalar
+  page-title: spend-recon
