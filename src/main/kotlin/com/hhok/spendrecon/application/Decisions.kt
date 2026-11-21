@@ -5,6 +5,7 @@ import com.hhok.spendrecon.domain.MatchStatus
 import jakarta.persistence.OptimisticLockException
 import org.hibernate.StaleStateException
 import org.springframework.dao.OptimisticLockingFailureException
+import org.springframework.dao.PessimisticLockingFailureException
 import java.util.UUID
 
 data class DecisionCommand(
@@ -63,6 +64,18 @@ fun Throwable.causedByOptimisticLock(): Boolean {
             current is OptimisticLockingFailureException ||
             current is StaleStateException
         ) {
+            return true
+        }
+        current = current.cause
+    }
+    return false
+}
+
+/** True when Postgres reported a deadlock or another failure to acquire a row lock. */
+fun Throwable.causedByLockFailure(): Boolean {
+    var current: Throwable? = this
+    while (current != null) {
+        if (current is PessimisticLockingFailureException) {
             return true
         }
         current = current.cause

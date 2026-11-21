@@ -64,6 +64,102 @@ class DecisionApiTest : PostgresIntegrationTest() {
     }
 
     @Test
+    fun `an approve that passes the version check and loses at flush is 409`() {
+        val fixture = suggested()
+        val before = conflicts()
+        val held = checkNotNull(jdbc.dataSource).connection
+        val pool = Executors.newFixedThreadPool(1)
+        var waiting: java.util.concurrent.Future<HttpResult>? = null
+        try {
+            held.autoCommit = false
+            held.prepareStatement("SELECT id FROM matches WHERE id = ? FOR UPDATE").use { statement ->
+                statement.setObject(1, UUID.fromString(fixture.matchId))
+                statement.executeQuery().use { rows ->
+                    check(rows.next()) { "Match ${fixture.matchId} was not found." }
+                }
+            }
+            val approve =
+                pool.submit<HttpResult> {
+                    post("/matches/${fixture.matchId}/approve", uniqueKey(), """{"version":0,"actor":"sam"}""")
+                }
+            waiting = approve
+            assertThat(awaitLockWait(approve)).isTrue()
+            held.prepareStatement("UPDATE matches SET version = version + 1 WHERE id = ?").use { statement ->
+                statement.setObject(1, UUID.fromString(fixture.matchId))
+                check(statement.executeUpdate() == 1)
+            }
+            held.commit()
+            val result = approve.get(20, TimeUnit.SECONDS)
+            assertThat(result.status).isEqualTo(409)
+            assertThat(json.readTree(result.body)["detail"].asText()).contains("stale")
+            assertThat(result.header("Content-Type")).contains("application/problem+json")
+            assertThat(conflicts() - before).isEqualTo(1.0)
+            assertThat(matchStatus(fixture.matchId)).isEqualTo("SUGGESTED")
+            assertThat(matchVersion(fixture.matchId)).isEqualTo(1)
+            assertThat(eventTypes(fixture.matchId)).containsExactly("SUGGESTED")
+        } finally {
+            release(held, waiting, pool)
+        }
+    }
+
+    @Test
+    fun `a reject and a reconcile of one charge do not deadlock`() {
+        val fixture = suggested()
+        val held = checkNotNull(jdbc.dataSource).connection
+        val pool = Executors.newFixedThreadPool(2)
+        val waiting = mutableListOf<java.util.concurrent.Future<HttpResult>>()
+        try {
+            held.autoCommit = false
+            held.prepareStatement("SELECT id FROM card_transactions WHERE id = ? FOR UPDATE").use { statement ->
+                statement.setObject(1, UUID.fromString(fixture.transactionId))
+                statement.executeQuery().use { rows ->
+                    check(rows.next()) { "Charge ${fixture.transactionId} was not found." }
+                }
+            }
+            val reject =
+                pool.submit<HttpResult> {
+                    post(
+                        "/matches/${fixture.matchId}/reject",
+                        uniqueKey(),
+                        """{"version":0,"actor":"sam","reason":"not this receipt"}""",
+                    )
+                }
+            val again =
+                pool.submit<HttpResult> {
+                    post("/reconcile/${fixture.transactionId}", uniqueKey(), "{}")
+                }
+            waiting += reject
+            waiting += again
+            assertThat(awaitLockWaits(2, listOf(reject, again))).isTrue()
+            held.rollback()
+            val results = listOf(reject.get(20, TimeUnit.SECONDS), again.get(20, TimeUnit.SECONDS))
+            assertThat(results.map { it.status }).allMatch { it == 200 || it == 409 }
+            results.filter { it.status == 409 }.forEach { conflict ->
+                assertThat(conflict.header("Content-Type")).contains("application/problem+json")
+            }
+            val successes = results.count { it.status == 200 }
+            val events = eventTypes(fixture.matchId)
+            assertThat(events).hasSize(1 + successes)
+            assertThat(matchCount(fixture.transactionId)).isEqualTo(1)
+            when (matchStatus(fixture.matchId)) {
+                "REJECTED" -> {
+                    assertThat(successes).isEqualTo(1)
+                    assertThat(transactionStatus(fixture.transactionId)).isEqualTo("UNMATCHED")
+                    assertThat(events).containsExactly("SUGGESTED", "REJECTED")
+                }
+                "SUGGESTED" -> {
+                    assertThat(successes).isEqualTo(2)
+                    assertThat(transactionStatus(fixture.transactionId)).isEqualTo("SUGGESTED")
+                    assertThat(events).containsExactly("SUGGESTED", "REJECTED", "SUGGESTED")
+                }
+                else -> error("unexpected match status ${matchStatus(fixture.matchId)}")
+            }
+        } finally {
+            release(held, waiting, pool)
+        }
+    }
+
+    @Test
     fun `approve writes one audit row and one outbox row and replays`() {
         val fixture = suggested()
         val body = """{"version":0,"actor":"sam","reason":"confirmed"}"""
@@ -449,6 +545,65 @@ class DecisionApiTest : PostgresIntegrationTest() {
         )!!
 
     private fun conflicts(): Double = meterRegistry.find("optimistic_lock_conflicts").counter()?.count() ?: 0.0
+
+    private fun awaitLockWait(request: java.util.concurrent.Future<HttpResult>): Boolean = awaitLockWaits(1, listOf(request))
+
+    private fun awaitLockWaits(
+        needed: Int,
+        requests: List<java.util.concurrent.Future<HttpResult>>,
+    ): Boolean {
+        val deadline = System.nanoTime() + Duration.ofSeconds(20).toNanos()
+        while (System.nanoTime() < deadline) {
+            if (requests.any { it.isDone }) {
+                val early = requests.first { it.isDone }.get()
+                throw AssertionError("request finished while the row lock was held: ${early.status} ${early.body}")
+            }
+            val waits =
+                jdbc.queryForObject(
+                    """
+                    SELECT count(*)
+                    FROM pg_stat_activity
+                    WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid()
+                    """.trimIndent(),
+                    Long::class.java,
+                )!!
+            if (waits >= needed) {
+                return true
+            }
+            Thread.sleep(50)
+        }
+        return false
+    }
+
+    private fun release(
+        held: java.sql.Connection,
+        waiting: java.util.concurrent.Future<HttpResult>?,
+        pool: java.util.concurrent.ExecutorService,
+    ) {
+        release(held, listOfNotNull(waiting), pool)
+    }
+
+    private fun release(
+        held: java.sql.Connection,
+        waiting: List<java.util.concurrent.Future<HttpResult>>,
+        pool: java.util.concurrent.ExecutorService,
+    ) {
+        try {
+            held.rollback()
+        } catch (_: Exception) {
+        }
+        waiting.forEach { request ->
+            try {
+                request.get(20, TimeUnit.SECONDS)
+            } catch (_: Exception) {
+            }
+        }
+        try {
+            held.close()
+        } catch (_: Exception) {
+        }
+        pool.shutdownNow()
+    }
 
     private fun uniqueOwner(): String = "owner-${UUID.randomUUID()}"
 

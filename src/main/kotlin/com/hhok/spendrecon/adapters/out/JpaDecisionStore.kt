@@ -9,6 +9,7 @@ import com.hhok.spendrecon.application.MatchNotFoundException
 import com.hhok.spendrecon.application.OUTBOX_MATCH_CONFIRMED
 import com.hhok.spendrecon.application.OverrideReasonRequiredException
 import com.hhok.spendrecon.application.StaleVersionException
+import com.hhok.spendrecon.application.TransactionNotFoundException
 import com.hhok.spendrecon.application.UNMATCHED
 import com.hhok.spendrecon.application.causedByOptimisticLock
 import com.hhok.spendrecon.domain.DecisionAction
@@ -24,6 +25,7 @@ import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
+import java.util.UUID
 
 @Repository
 class JpaDecisionStore(
@@ -33,6 +35,10 @@ class JpaDecisionStore(
 ) : DecisionStore {
     @Transactional
     override fun apply(command: ApplyDecision): AppliedDecision {
+        // Lock order for one charge: card_transactions, then matches, then receipts.
+        // The id read does not lock the match. Reconcile uses this same order.
+        val transactionId = transactionIdOf(command.matchId)
+        lockCharge(transactionId)
         val match =
             entityManager.find(MatchEntity::class.java, command.matchId)
                 ?: throw MatchNotFoundException()
@@ -97,6 +103,26 @@ class JpaDecisionStore(
         )
         flushOrStale()
         return AppliedDecision(matchId = match.id, status = next, version = match.version)
+    }
+
+    private fun transactionIdOf(matchId: UUID): UUID =
+        jdbc
+            .query(
+                "SELECT transaction_id FROM matches WHERE id = ?",
+                { rs, _ -> rs.getObject("transaction_id", UUID::class.java) },
+                matchId,
+            ).firstOrNull() ?: throw MatchNotFoundException()
+
+    private fun lockCharge(transactionId: UUID) {
+        val locked =
+            jdbc.query(
+                "SELECT 1 FROM card_transactions WHERE id = ? FOR UPDATE",
+                { _, _ -> 1 },
+                transactionId,
+            )
+        if (locked.isEmpty()) {
+            throw TransactionNotFoundException()
+        }
     }
 
     private fun flushOrStale() {

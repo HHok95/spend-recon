@@ -10,12 +10,15 @@ import com.hhok.spendrecon.application.OverrideReasonRequiredException
 import com.hhok.spendrecon.application.StaleVersionException
 import com.hhok.spendrecon.application.TransactionAlreadyMatchedException
 import com.hhok.spendrecon.application.TransactionNotFoundException
+import com.hhok.spendrecon.application.causedByLockFailure
 import com.hhok.spendrecon.application.causedByOptimisticLock
 import com.hhok.spendrecon.domain.InvalidMoneyException
 import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.MeterRegistry
 import jakarta.persistence.OptimisticLockException
+import org.springframework.dao.CannotAcquireLockException
 import org.springframework.dao.OptimisticLockingFailureException
+import org.springframework.dao.PessimisticLockingFailureException
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
@@ -75,7 +78,30 @@ class ApiExceptionHandler(
         if (exception.causedByOptimisticLock()) {
             return staleVersion()
         }
+        if (exception.causedByLockFailure()) {
+            return lockNotAcquired()
+        }
         throw exception
+    }
+
+    /**
+     * DeadlockLoserDataAccessException is a CannotAcquireLockException, and that
+     * is a PessimisticLockingFailureException. The loser retries instead of seeing 500.
+     */
+    @ExceptionHandler(CannotAcquireLockException::class, PessimisticLockingFailureException::class)
+    fun lockNotAcquired(): ResponseEntity<String> {
+        val response =
+            problemResponse(
+                json,
+                HttpStatus.CONFLICT,
+                "The row is busy. Retry the request.",
+            )
+        return ResponseEntity
+            .status(response.statusCode)
+            .headers(response.headers)
+            .header(HttpHeaders.RETRY_AFTER, properties.idempotency.retryAfter.toSeconds().toString())
+            .contentType(MediaType.APPLICATION_PROBLEM_JSON)
+            .body(response.body)
     }
 
     @ExceptionHandler(IllegalTransitionException::class)
