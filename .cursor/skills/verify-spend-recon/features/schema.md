@@ -4,7 +4,7 @@ After the API is up, the database it migrated contains the V1 tables and the one
 
 ## Sub-features
 
-- `schema.flyway` — `flyway_schema_history` has successful version `1`.
+- `schema.flyway` — the highest successful version in `flyway_schema_history` equals the highest `V<n>__*.sql` file, and no migration failed.
 - `schema.tables` — `card_transactions`, `documents`, `matches`, `reconciliation_events`, `idempotency_keys`, and `outbox` exist.
 - `schema.no-content-hash` — `documents` has no `content_hash` column.
 - `schema.live-match-index` — unique index `matches_one_live_per_document` excludes `REJECTED`.
@@ -20,7 +20,7 @@ Preconditions:
 - `RUN_ID` is set and `launch` then `doctor` succeeded for that id.
 - The database is the empty one this launch migrated. Do not point `psql` at another Postgres.
 
-- **Read the migrated schema.** `.cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive schema` queries the Compose database. Result: the six tables are listed, the `content_hash` count is `0`, the index definition contains `UNIQUE` and `REJECTED`, and the Flyway version is `1`. Output is under `/tmp/spend-recon-verify-evidence/$RUN_ID/schema/`.
+- **Read the migrated schema.** `.cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive schema` queries the Compose database. Result: the six tables are listed, the `content_hash` count is `0`, the index definition contains `UNIQUE` and `REJECTED`, and the highest successful Flyway version matches the highest migration file with no failed row. Output is under `/tmp/spend-recon-verify-evidence/$RUN_ID/schema/`.
 
 ## Gotchas
 

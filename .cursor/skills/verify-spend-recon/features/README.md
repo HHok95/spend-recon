@@ -6,9 +6,9 @@ This directory is the maintained source for verifying the user-facing behavior o
 
 - Check out the repository and run from its root, with Docker available.
 - Set `RUN_ID` to a fresh id such as `proof1`. The evidence directory is `/tmp/spend-recon-verify-evidence/$RUN_ID`.
-- Launch with `.cursor/skills/verify-spend-recon/scripts/spend-recon-verify launch`. Postgres has no host volume, so the database starts empty and Flyway applies V1.
+- Launch with `.cursor/skills/verify-spend-recon/scripts/spend-recon-verify launch`. Postgres has no host volume, so the database starts empty and Flyway applies the `V<n>__*.sql` files in `src/main/resources/db/migration`.
 - The only stack under test listens at `http://127.0.0.1:8080`. Host ports `8080` and `5432` must be free. A second stack cannot run beside this one.
-- Run `spend-recon-verify doctor` and require this compose project, port `8080` owned by its app container, health `UP`, Flyway version `1`, and OpenAPI title `spend-recon`.
+- Run `spend-recon-verify doctor` and require this compose project, port `8080` owned by its app container, health `UP`, the highest successful Flyway version matching the highest `V<n>` file with no failed migration, and OpenAPI title `spend-recon`.
 - Never drive an instance that was not started by this verification run.
 - There are no seeded rows. The schema is the proof that the app migrated.
 
@@ -46,7 +46,7 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Health](./health.md) covers `GET /actuator/health` reporting `UP` with no API key.
 - [Prometheus scrape](./prometheus.md) covers `GET /actuator/prometheus` exposing the JVM metric.
 - [Scalar API reference](./scalar.md) covers `GET /scalar` rendering the springdoc document at `/v3/api-docs`, and the absence of Swagger UI.
-- [Migrated schema](./schema.md) covers Flyway V1, the six tables, no duplicate-check column, and the one-live-match index.
+- [Migrated schema](./schema.md) covers the applied Flyway migrations, the six tables, no duplicate-check column, and the one-live-match index.
 - [Append-only audit log](./audit-log.md) covers `UPDATE` and `DELETE` on `reconciliation_events` failing while the row stays.
 - [Ingest](./ingest.md) covers `POST /transactions` and `POST /documents`, the API key, decimal-string amounts, and idempotency.
 

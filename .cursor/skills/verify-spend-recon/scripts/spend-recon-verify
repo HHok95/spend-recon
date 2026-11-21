@@ -63,6 +63,55 @@ psql_exec() {
   compose exec -T postgres psql -v ON_ERROR_STOP=1 -U spendrecon -d spendrecon "$@"
 }
 
+# Highest V<n> filename. The check follows the files, so a later migration still passes.
+highest_migration_version() {
+  local dir="$ROOT/src/main/resources/db/migration"
+  local highest="" n file base
+  local saw=0
+  for file in "$dir"/V*__*.sql; do
+    [[ -f "$file" ]] || continue
+    base="$(basename "$file")"
+    [[ "$base" =~ ^V([0-9]+)__ ]] || continue
+    n=$((10#${BASH_REMATCH[1]}))
+    if [[ "$saw" -eq 0 || "$n" -gt "$highest" ]]; then
+      highest="$n"
+      saw=1
+    fi
+  done
+  if [[ "$saw" -eq 0 ]]; then
+    echo "No V<n>__*.sql files in $dir" >&2
+    return 1
+  fi
+  printf '%s\n' "$highest"
+}
+
+# Sets FLYWAY_VERSION to the highest successful version (empty when none)
+# and FLYWAY_FAILED to the number of rows with success = false.
+# Pass "quiet" while Postgres may still be starting.
+flyway_read() {
+  local quiet="${1:-}"
+  local version failed
+  FLYWAY_VERSION=""
+  FLYWAY_FAILED=""
+  if [[ "$quiet" == "quiet" ]]; then
+    if ! version="$(psql_exec -tAc "SELECT max(version::int) FROM flyway_schema_history WHERE success" 2>/dev/null)"; then
+      return 1
+    fi
+    if ! failed="$(psql_exec -tAc "SELECT count(*) FROM flyway_schema_history WHERE success = false" 2>/dev/null)"; then
+      return 1
+    fi
+  else
+    if ! version="$(psql_exec -tAc "SELECT max(version::int) FROM flyway_schema_history WHERE success")"; then
+      return 1
+    fi
+    if ! failed="$(psql_exec -tAc "SELECT count(*) FROM flyway_schema_history WHERE success = false")"; then
+      return 1
+    fi
+  fi
+  FLYWAY_VERSION="$(printf '%s' "$version" | tr -d '[:space:]')"
+  FLYWAY_FAILED="$(printf '%s' "$failed" | tr -d '[:space:]')"
+}
+
 launch() {
   require_run_id
   EVIDENCE_DIR="$(evidence_dir)"
@@ -85,17 +134,19 @@ EOF
   echo "Starting compose project $PROJECT"
   compose up --build -d >"$EVIDENCE_DIR/launch/compose-up.txt" 2>&1
 
-  local ready=0 code version i
+  local ready=0 code version failed expected i
+  expected="$(highest_migration_version)"
   for i in $(seq 1 90); do
     code="$(curl -sS --max-time 2 -o "$EVIDENCE_DIR/launch/health.json" -w '%{http_code}' "$BASE_URL/actuator/health" 2>"$EVIDENCE_DIR/launch/health.stderr" || true)"
     version=""
-    if version="$(psql_exec -tAc "SELECT version FROM flyway_schema_history WHERE success" 2>/dev/null)"; then
-      version="$(printf '%s' "$version" | tr -d '[:space:]')"
-    else
-      version=""
+    failed=""
+    if flyway_read quiet; then
+      version="$FLYWAY_VERSION"
+      failed="$FLYWAY_FAILED"
     fi
-    echo "try $i health=$code flyway=${version:-none}" >>"$EVIDENCE_DIR/launch/wait.log"
-    if [[ "$code" == "200" ]] && grep -q '"status":"UP"' "$EVIDENCE_DIR/launch/health.json" && [[ "$version" == "1" ]]; then
+    echo "try $i health=$code flyway=${version:-none} failed=${failed:-none} expected=$expected" >>"$EVIDENCE_DIR/launch/wait.log"
+    if [[ "$code" == "200" ]] && grep -q '"status":"UP"' "$EVIDENCE_DIR/launch/health.json" \
+      && [[ -n "$version" && "$failed" == "0" && "$version" == "$expected" ]]; then
       printf '%s\n' "$version" >"$EVIDENCE_DIR/launch/flyway-version.txt"
       ready=1
       break
@@ -109,7 +160,7 @@ EOF
     echo "If the app log says 'Connect timed out' while Postgres is healthy, this host's legacy iptables FORWARD policy may be DROP. A normal Docker install does not need a change. On this kind of VM: sudo iptables-legacy -P FORWARD ACCEPT" >&2
     exit 1
   fi
-  echo "Ready at $BASE_URL (flyway version 1). Evidence: $EVIDENCE_DIR"
+  echo "Ready at $BASE_URL (flyway version $version, no failed migrations). Evidence: $EVIDENCE_DIR"
 }
 
 check() {
@@ -162,13 +213,19 @@ doctor() {
     check "GET /actuator/health without an API key is UP" 1
   fi
 
-  local version
-  version="$(psql_exec -tAc "SELECT version FROM flyway_schema_history WHERE success" | tr -d '[:space:]')"
+  local version failed expected
+  expected="$(highest_migration_version)"
+  version=""
+  failed=""
+  if flyway_read; then
+    version="$FLYWAY_VERSION"
+    failed="$FLYWAY_FAILED"
+  fi
   printf '%s\n' "$version" >"$EVIDENCE_DIR/doctor/flyway-version.txt"
-  if [[ "$version" == "1" ]]; then
-    check "flyway version 1 applied" 0
+  if [[ -n "$version" && "$failed" == "0" && "$version" == "$expected" ]]; then
+    check "flyway version $expected applied with no failures" 0
   else
-    check "flyway version 1 applied" 1
+    check "flyway version $expected applied with no failures" 1
   fi
 
   code="$(curl -sS --max-time 5 -o "$EVIDENCE_DIR/doctor/api-docs.json" -w '%{http_code}' "$BASE_URL/v3/api-docs" 2>"$EVIDENCE_DIR/doctor/api-docs.stderr" || true)"
@@ -259,10 +316,17 @@ drive_schema() {
   [[ "$hash_count" == "0" ]] || { echo "documents.content_hash exists" >&2; exit 1; }
   psql_exec -tAc "SELECT indexdef FROM pg_indexes WHERE indexname = 'matches_one_live_per_document'" >"$dir/indexdef.txt"
   grep -q 'UNIQUE' "$dir/indexdef.txt" && grep -q 'REJECTED' "$dir/indexdef.txt" || { echo "live-match index missing" >&2; exit 1; }
-  local version
-  version="$(psql_exec -tAc "SELECT version FROM flyway_schema_history WHERE success" | tr -d '[:space:]')"
+  local version failed expected
+  expected="$(highest_migration_version)"
+  if ! flyway_read; then
+    echo "could not read flyway_schema_history" >&2
+    exit 1
+  fi
+  version="$FLYWAY_VERSION"
+  failed="$FLYWAY_FAILED"
   printf '%s\n' "$version" >"$dir/flyway-version.txt"
-  [[ "$version" == "1" ]] || { echo "flyway version $version" >&2; exit 1; }
+  [[ -n "$version" && "$failed" == "0" && "$version" == "$expected" ]] \
+    || { echo "flyway version ${version:-none}, expected $expected, failed rows ${failed:-unknown}" >&2; exit 1; }
   echo "schema passed"
 }
 
