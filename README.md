@@ -27,6 +27,6 @@ docker compose up --build
 
 - Health: http://localhost:8080/actuator/health
 - Metrics: http://localhost:8080/actuator/prometheus
-- Swagger UI: http://localhost:8080/swagger-ui.html
+- API reference (Scalar): http://localhost:8080/scalar
 
 Postgres is published on `localhost:5432` as database `spendrecon`, user `spendrecon`, password `spendrecon`. Those values are local defaults.

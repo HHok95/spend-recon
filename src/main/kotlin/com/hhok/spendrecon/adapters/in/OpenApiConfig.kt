@@ -6,8 +6,9 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 
 /**
- * Swagger UI metadata. REST controllers, DTOs, the API key filter, and
- * problem+json error mapping arrive in later pull requests.
+ * OpenAPI document metadata. Scalar renders this document at /scalar.
+ * REST controllers, DTOs, the API key filter, and problem+json error
+ * mapping arrive in later pull requests.
  */
 @Configuration
 class OpenApiConfig {

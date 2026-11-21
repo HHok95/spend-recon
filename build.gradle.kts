@@ -43,7 +43,9 @@ dependencies {
     implementation("org.flywaydb:flyway-core")
     implementation("org.flywaydb:flyway-database-postgresql")
     implementation("org.jetbrains.kotlin:kotlin-reflect")
-    implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.10.1")
+    // springdoc writes the OpenAPI document. scalar-webmvc is Scalar's Spring Boot UI.
+    implementation("org.springdoc:springdoc-openapi-starter-webmvc-api:2.10.1")
+    implementation("com.scalar.maven:scalar-webmvc:0.9.1")
     implementation("io.micrometer:micrometer-registry-prometheus")
     runtimeOnly("org.postgresql:postgresql")
 

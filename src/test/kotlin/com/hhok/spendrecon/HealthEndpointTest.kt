@@ -37,14 +37,20 @@ class HealthEndpointTest : PostgresIntegrationTest() {
     }
 
     @Test
-    fun `swagger ui and the openapi document are served`() {
+    fun `scalar and the openapi document are served`() {
         mockMvc
             .perform(get("/v3/api-docs"))
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.info.title").value("spend-recon"))
 
         mockMvc
-            .perform(get("/swagger-ui/index.html"))
+            .perform(get("/scalar"))
             .andExpect(status().isOk)
+            .andExpect(content().string(containsString("/v3/api-docs")))
+            .andExpect(content().string(containsString("Scalar")))
+
+        mockMvc
+            .perform(get("/swagger-ui/index.html"))
+            .andExpect(status().isNotFound)
     }
 }

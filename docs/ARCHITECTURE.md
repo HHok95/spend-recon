@@ -8,7 +8,7 @@ These are locked unless Hok objects:
 - Gradle with the Kotlin DSL.
 - PostgreSQL 16, with Flyway for migrations.
 - Spring Data JPA with Hibernate. Use `@Version` for optimistic locking, keep associations lazy, keep `open-in-view` off, and set `ddl-auto=validate` so Flyway owns the schema.
-- springdoc-openapi (Swagger UI), Micrometer with a Prometheus registry, JUnit 5, Testcontainers, and Kotest property tests for `Money`.
+- springdoc-openapi for the OpenAPI document, Scalar for the API reference, Micrometer with a Prometheus registry, JUnit 5, Testcontainers, and Kotest property tests for `Money`.
 
 **Decided (Hok, 2026-11-21):** JPA/Hibernate.
 
