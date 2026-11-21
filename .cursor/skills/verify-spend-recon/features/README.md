@@ -8,7 +8,7 @@ This directory is the maintained source for verifying the user-facing behavior o
 - Set `RUN_ID` to a fresh id such as `proof1`. The evidence directory is `/tmp/spend-recon-verify-evidence/$RUN_ID`.
 - Launch with `.cursor/skills/verify-spend-recon/scripts/spend-recon-verify launch`. Postgres has no host volume, so the database starts empty and Flyway applies the `V<n>__*.sql` files in `src/main/resources/db/migration`.
 - The only stack under test listens at `http://127.0.0.1:8080`. Prometheus listens at `http://127.0.0.1:9090`. Grafana listens at `http://127.0.0.1:3000`. Host ports `8080`, `5432`, `9090`, and `3000` must be free. A second stack cannot run beside this one.
-- Run `spend-recon-verify doctor` and require this compose project, port `8080` owned by its app container, health `UP`, the highest successful Flyway version matching the highest `V<n>` file with no failed migration, and OpenAPI title `spend-recon`.
+- Run `spend-recon-verify doctor` and require this compose project, port `8080` owned by its app container, health `UP`, the highest successful Flyway version matching the highest `V<n>` file with no failed migration, OpenAPI title `spend-recon`, Prometheus on port `9090`, and Grafana on port `3000`.
 - Never drive an instance that was not started by this verification run.
 - There are no seeded rows. The schema is the proof that the app migrated.
 
@@ -49,13 +49,12 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Migrated schema](./schema.md) covers the applied Flyway migrations, the six tables, no duplicate-check column, and the one-live-match index.
 - [Append-only audit log](./audit-log.md) covers `UPDATE` and `DELETE` on `reconciliation_events` failing while the row stays.
 - [Ingest](./ingest.md) covers `POST /transactions` and `POST /documents`, the API key, decimal-string amounts, and idempotency.
+- [Reconcile](./reconcile.md) covers `POST /reconcile/{txnId}`, auto-approve, `NO_CANDIDATE`, `AMOUNT_MISMATCH`, a receipt held by another live match, and `GET /matches/{id}/history`.
 - [Grafana dashboard](./grafana.md) covers the Prometheus target for the app, the provisioned dashboard, and `idempotent_replays_total` on that dashboard.
 
 ## Planned features
 
 These are specified in `docs/ARCHITECTURE.md` and are not implemented. Do not drive them and do not record a pass. A later PR replaces each entry with a feature file once the route exists.
 
-- Reconcile. `POST /reconcile/{txnId}` returns the match id, status, score, and rules fired. Not built.
 - Approve and reject. `POST /matches/{id}/approve` and `POST /matches/{id}/reject`. A stale `version` returns 409. Not built.
-- Auto-approve audit. A `MATCHED` score at or above the threshold writes an audit event with actor `system:auto-approve`. Not built.
-- Outbox. Approve writes an `outbox` row in the same transaction, and a restart still publishes it. Not built.
+- Outbox publishing. Auto-approve already inserts a `MatchConfirmed` row. The poller that publishes it after a restart is not built.

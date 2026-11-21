@@ -4,6 +4,9 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.hhok.spendrecon.ReconProperties
 import com.hhok.spendrecon.application.IdempotencyInFlightException
 import com.hhok.spendrecon.application.IdempotencyMismatchException
+import com.hhok.spendrecon.application.MatchNotFoundException
+import com.hhok.spendrecon.application.TransactionAlreadyMatchedException
+import com.hhok.spendrecon.application.TransactionNotFoundException
 import com.hhok.spendrecon.domain.InvalidMoneyException
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
@@ -25,6 +28,18 @@ class ApiExceptionHandler(
     @ExceptionHandler(HttpMessageNotReadableException::class)
     fun unreadable(): ResponseEntity<String> =
         problemResponse(json, HttpStatus.BAD_REQUEST, "Request body must be a JSON object.")
+
+    @ExceptionHandler(TransactionNotFoundException::class, MatchNotFoundException::class)
+    fun notFound(exception: RuntimeException): ResponseEntity<String> =
+        problemResponse(json, HttpStatus.NOT_FOUND, exception.message ?: "Not found.")
+
+    @ExceptionHandler(TransactionAlreadyMatchedException::class)
+    fun alreadyMatched(): ResponseEntity<String> =
+        problemResponse(
+            json,
+            HttpStatus.CONFLICT,
+            "This transaction already has a match.",
+        )
 
     @ExceptionHandler(IdempotencyMismatchException::class)
     fun mismatch(): ResponseEntity<String> =

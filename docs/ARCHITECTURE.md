@@ -45,10 +45,13 @@ documents(id uuid pk, kind text check (kind in ('RECEIPT','BILL')), card_owner_i
           tax_minor bigint null, doc_date date, created_at timestamptz)
   -- duplicate-check column(s) added in a later migration once section 4 is decided
 matches(id uuid pk, transaction_id uuid unique references card_transactions,
-        document_id uuid null references documents, status text, score numeric(4,3),
+        document_id uuid null references documents, status text, score numeric(4,3) null,
         rules_fired text[], exception_type text null, version bigint not null default 0,
         decided_by text null, decided_at timestamptz null, created_at timestamptz)
+  -- score is null exactly when document_id is null: (score IS NULL) = (document_id IS NULL)
+  -- score is null, or between 0 and 1
   -- partial unique index: one live (non-rejected) match per document_id
+  -- EXCEPTION holds its receipt
 reconciliation_events(id bigserial pk, match_id uuid, event_type text, actor text,
         reason text, rules_fired text[], before jsonb, after jsonb, created_at timestamptz)
   -- trigger: RAISE EXCEPTION on UPDATE or DELETE (append-only)
@@ -75,15 +78,17 @@ outbox(id bigserial pk, aggregate_id uuid, event_type text, payload jsonb,
 - Auditable: the auto-approve event stores the score, the threshold in force, the rules fired and the rule-set version. EXCEPTION and SUGGESTED results are never auto-approved. Setting the threshold above 1.0 turns auto-approve off.
 - Metric `recon_auto_approvals_total`, so the auto-approve rate is visible.
 - Every transition writes one `reconciliation_events` row in the same database transaction.
+- An EXCEPTION holds its receipt until approved or rejected, when the merchant score clears the minimum in section 6.
+- Matching skips a receipt already held by another live match. If no candidate remains, the result is an EXCEPTION.
 
-**Decided (Hok, 2026-11-21):** auto-approve above a score threshold, kept auditable as above.
+**Decided (Hok, 2026-11-21):** auto-approve above a score threshold, kept auditable as above. An EXCEPTION holds its receipt. Matching skips a receipt held by another live match.
 
 ## 6. Matching rules (deterministic, ordered)
 | Rule id | Check | Effect |
 |---|---|---|
-| R1_CURRENCY | Currencies must be equal | If not: EXCEPTION CURRENCY_MISMATCH, never auto-matched |
+| R1_CURRENCY | Currencies must be equal | If not, and the merchant score clears the minimum: EXCEPTION CURRENCY_MISMATCH, never auto-matched |
 | R2_OWNER | Same card owner | Hard filter |
-| R3_AMOUNT | `amount_minor` equal | If one candidate is unequal: EXCEPTION AMOUNT_MISMATCH |
+| R3_AMOUNT | `amount_minor` equal | If one candidate is unequal and its merchant score clears the minimum: EXCEPTION AMOUNT_MISMATCH |
 | R4_DATE | \|txn_date − doc_date\| ≤ 3 days | Hard filter |
 | R5_MERCHANT | Jaro-Winkler on `merchant_norm` | Score component |
 | R6_TAX | Tax present on both and equal | Score component |
@@ -91,11 +96,18 @@ outbox(id bigserial pk, aggregate_id uuid, event_type text, payload jsonb,
 
 Score = 0.7·merchant + 0.3·tax. A score ≥ 0.85 gives MATCHED. A lower score gives SUGGESTED, and the best candidate wins. When two candidates tie, the result is SUGGESTED with both listed.
 
+Zero candidate receipts gives EXCEPTION NO_CANDIDATE, with `document_id` null and `score` null. That is also the result when every receipt is already held by another live match. `score` is null exactly when the match has no receipt.
+
+A receipt that fails R1 or R3 is held only when Jaro-Winkler on `merchant_norm` is at least `recon.exception.min-merchant-score` (default 0.60, the same 0-to-1 scale as R5). If no failing receipt clears that score, the result is NO_CANDIDATE with no receipt and a null score. The exception audit event stores `minMerchantScore`, the value in force, the same way an auto-approve event stores its threshold.
+
+**Decided (Hok, 2026-11-22):** an EXCEPTION holds a receipt only when the merchant score is at least `recon.exception.min-merchant-score`. Otherwise the result is NO_CANDIDATE.
+
 ## 7. API (all writes need `X-API-Key` and `Idempotency-Key`)
 ```
 POST /transactions             201 {id, status}
 POST /documents                201 {id}
 POST /reconcile/{txnId}        200 {matchId, status, score, rulesFired}
+                               score is JSON null when the match has no receipt
 GET  /matches?status=          200 page
 GET  /matches/{id}             200 (includes version)
 POST /matches/{id}/approve     body {version, actor, reason?}  200 | 409 stale version

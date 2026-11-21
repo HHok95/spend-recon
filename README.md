@@ -2,7 +2,7 @@
 
 Card-transaction to receipt reconciliation.
 
-The locked design is [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). This service records card transactions and documents. Matching, approval, and the outbox are later pull requests.
+The locked design is [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). This service records card transactions and documents, matches a charge to a receipt, and writes one audit event per transition. Manual approve and reject, and publishing the outbox, are later pull requests.
 
 ## Requirements
 
@@ -41,7 +41,7 @@ Postgres is published on `localhost:5432` as database `spendrecon`, user `spendr
   User `admin`, password `admin`. That login is for this local Compose stack only. Do not reuse it on another machine.
   Grafana loads `monitoring/grafana/dashboards/spend-recon.json` at startup. The dashboard is http://localhost:3000/d/spend-recon/spend-recon
 
-The dashboard has a panel for each metric in section 9 of the architecture. `idempotent_replays_total` has samples while the app is running, because ingest registers that counter. Matching, approval, and the outbox record the other six metrics in later pull requests. Those panels stay empty until the series exists. This stack does not publish stand-in series.
+The dashboard has a panel for each metric in section 9 of the architecture. `idempotent_replays_total` has samples while the app is running, because ingest registers that counter. Matching records `recon_matches_total{result}`, `recon_match_latency_seconds`, `recon_exceptions_total{type}`, and `recon_auto_approvals_total`. `optimistic_lock_conflicts_total` and `outbox_lag_seconds` stay empty until approve, reject, and outbox publishing exist. This stack does not publish stand-in series.
 
 ## Ingest
 
@@ -59,4 +59,17 @@ curl -sS -D - \
   -H 'Idempotency-Key: demo-1' \
   -d '{"cardOwnerId":"owner-1","merchant":"Cafe","amount":"12.34","currency":"AUD","txnDate":"2026-11-21"}' \
   http://localhost:8080/transactions
+```
+
+## Reconcile
+
+`POST /reconcile/{txnId}` uses the same two headers. The body may be empty. A match whose score is at least `0.95` and whose status is `MATCHED` is stored as `APPROVED`, with actor `system:auto-approve`. The response status is that stored status. `GET /matches/{id}/history` returns one event per transition. `GET /matches/{id}` includes `version`.
+
+A charge with no receipt returns status `EXCEPTION`, exception type `NO_CANDIDATE`, and JSON `score` null. A charge that finds one receipt with a different amount keeps that receipt as `AMOUNT_MISMATCH` when the merchant names score at least 0.60. A more distant merchant name leaves the receipt free. Another charge cannot take a receipt a live match already holds.
+
+```bash
+curl -sS -D - -X POST \
+  -H 'X-API-Key: local-dev-key' \
+  -H 'Idempotency-Key: recon-1' \
+  http://localhost:8080/reconcile/00000000-0000-0000-0000-000000000000
 ```

@@ -16,6 +16,8 @@ abstract class PostgresIntegrationTest {
                 withDatabaseName("spendrecon")
                 withUsername("spendrecon")
                 withPassword("spendrecon")
+                // Several Spring contexts each keep a pool. The image default is 100.
+                withCommand("postgres", "-c", "max_connections=300")
                 start()
             }
 

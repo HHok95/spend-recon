@@ -25,7 +25,11 @@ class ApiKeyFilter(
         if (!request.method.equals("POST", ignoreCase = true)) {
             return true
         }
-        return pathOf(request) !in PROTECTED
+        val path = pathOf(request)
+        if (path in PROTECTED || path == "/reconcile" || path.startsWith("/reconcile/")) {
+            return false
+        }
+        return true
     }
 
     override fun doFilterInternal(

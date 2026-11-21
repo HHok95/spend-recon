@@ -17,6 +17,8 @@ data class StoredHttpResponse(
 object IdempotencyEndpoints {
     const val TRANSACTIONS = "POST /transactions"
     const val DOCUMENTS = "POST /documents"
+
+    fun reconcile(transactionId: java.util.UUID): String = "POST /reconcile/$transactionId"
 }
 
 /** The key's response is not stored yet. The HTTP layer answers 409 with Retry-After. */

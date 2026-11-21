@@ -111,16 +111,6 @@ class IngestController(
         return request.inputStream.readAllBytes()
     }
 
-    private fun requireIdempotencyKey(value: String?): String {
-        if (value.isNullOrBlank()) {
-            throw InvalidRequestException("The Idempotency-Key header is required.")
-        }
-        if (value.length > ApiHeaders.MAX_IDEMPOTENCY_KEY_LENGTH) {
-            throw InvalidRequestException("The Idempotency-Key header must be at most 255 characters.")
-        }
-        return value
-    }
-
     private fun json(outcome: StoredHttpResponse): ResponseEntity<String> =
         ResponseEntity
             .status(outcome.status)
