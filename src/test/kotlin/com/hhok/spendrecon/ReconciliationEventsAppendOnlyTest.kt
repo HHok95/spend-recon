@@ -28,8 +28,8 @@ class ReconciliationEventsAppendOnlyTest : PostgresIntegrationTest() {
         )
         jdbc.update(
             """
-            INSERT INTO matches (id, transaction_id, status, score)
-            VALUES (?, ?, 'MATCHED', 0.910)
+            INSERT INTO matches (id, transaction_id, status, score, exception_type)
+            VALUES (?, ?, 'EXCEPTION', NULL, 'NO_CANDIDATE')
             """.trimIndent(),
             matchId,
             transactionId,

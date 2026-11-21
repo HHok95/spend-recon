@@ -1,6 +1,6 @@
 # Append-only audit log
 
-An operator inserts one reconciliation event and then cannot change or remove it. The stored reason stays `created`. History reads over HTTP are not built yet; this recipe uses `psql` on the database the API migrated.
+An operator inserts one reconciliation event and then cannot change or remove it. The stored reason stays `created`. This recipe uses `psql` on the database the API migrated. `GET /matches/{id}/history` is the HTTP read, and the reconcile recipe drives it.
 
 ## Sub-features
 
@@ -10,7 +10,7 @@ An operator inserts one reconciliation event and then cannot change or remove it
 
 ## How to get to it (user POV)
 
-- Connect to database `spendrecon` on the Compose Postgres and run the statements in this recipe. `GET /matches/{id}/history` is not implemented.
+- Connect to database `spendrecon` on the Compose Postgres and run the statements in this recipe. The inserted match is an `EXCEPTION` of type `NO_CANDIDATE` with a null score, because a score is stored only when the match holds a receipt.
 
 ## Driving it with spend-recon-verify
 

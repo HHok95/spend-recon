@@ -1,6 +1,6 @@
 ---
 name: verify-spend-recon
-description: Verify the spend-recon HTTP API (health, Prometheus, Scalar at /scalar, the Flyway schema, the append-only audit table, and ingest with idempotency) against the Docker Compose stack. Use after a change to those routes or before claiming a later reconciliation feature works.
+description: Verify the spend-recon HTTP API (health, Prometheus, Scalar at /scalar, the Flyway schema, the append-only audit table, ingest with idempotency, and reconcile with auto-approve, exceptions, and match history) against the Docker Compose stack. Use after a change to those routes or before claiming a later approve or reject feature works.
 ---
 
 # Verify spend-recon
@@ -50,7 +50,7 @@ It passes only when all of these are true:
 - The highest successful Flyway version equals the highest `V<n>__*.sql` file, and no migration failed.
 - `GET /v3/api-docs` returns `"title":"spend-recon"`, which identifies this build.
 
-Current read routes do not check an API key. A 200 without `X-API-Key` is the auth check for those routes. `POST /transactions` and `POST /documents` require `X-API-Key`. Do not treat an open read as proof of write authentication.
+Current read routes do not check an API key. A 200 without `X-API-Key` is the auth check for those routes. `POST /transactions`, `POST /documents`, and `POST /reconcile/{txnId}` require `X-API-Key`. Do not treat an open read as proof of write authentication.
 
 ## Drive
 
@@ -63,9 +63,10 @@ Follow `features/README.md`, then one feature file. The built commands are:
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive schema
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive audit
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive ingest
+.cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive reconcile
 ```
 
-`drive scalar` is the API reference check: `GET /scalar` returns the Scalar page pointed at `/v3/api-docs`, and `GET /swagger-ui/index.html` returns 404. `drive ingest` posts transactions and documents with `X-API-Key: local-dev-key`. Reconcile, approve, reject, auto-approve, and outbox routes are listed in the map and must not be reported as verified.
+`drive scalar` is the API reference check: `GET /scalar` returns the Scalar page pointed at `/v3/api-docs`, and `GET /swagger-ui/index.html` returns 404. `drive ingest` posts transactions and documents with `X-API-Key: local-dev-key`. `drive reconcile` posts a charge and a receipt, reconciles them to an auto-approved match, then checks a `NO_CANDIDATE` exception, an `AMOUNT_MISMATCH` that holds its receipt, and `GET /matches/{id}/history`. Approve, reject, and outbox publishing are listed in the map and must not be reported as verified.
 
 ## Evidence
 
@@ -101,6 +102,7 @@ export RUN_ID=proof1
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify doctor
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive scalar
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive ingest
+.cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive reconcile
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify evidence
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify cleanup
 ```

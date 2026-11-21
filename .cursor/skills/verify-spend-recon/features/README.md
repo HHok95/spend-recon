@@ -49,12 +49,11 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Migrated schema](./schema.md) covers the applied Flyway migrations, the six tables, no duplicate-check column, and the one-live-match index.
 - [Append-only audit log](./audit-log.md) covers `UPDATE` and `DELETE` on `reconciliation_events` failing while the row stays.
 - [Ingest](./ingest.md) covers `POST /transactions` and `POST /documents`, the API key, decimal-string amounts, and idempotency.
+- [Reconcile](./reconcile.md) covers `POST /reconcile/{txnId}`, auto-approve, `NO_CANDIDATE`, `AMOUNT_MISMATCH`, a receipt held by another live match, and `GET /matches/{id}/history`.
 
 ## Planned features
 
 These are specified in `docs/ARCHITECTURE.md` and are not implemented. Do not drive them and do not record a pass. A later PR replaces each entry with a feature file once the route exists.
 
-- Reconcile. `POST /reconcile/{txnId}` returns the match id, status, score, and rules fired. Not built.
 - Approve and reject. `POST /matches/{id}/approve` and `POST /matches/{id}/reject`. A stale `version` returns 409. Not built.
-- Auto-approve audit. A `MATCHED` score at or above the threshold writes an audit event with actor `system:auto-approve`. Not built.
-- Outbox. Approve writes an `outbox` row in the same transaction, and a restart still publishes it. Not built.
+- Outbox publishing. Auto-approve already inserts a `MatchConfirmed` row. The poller that publishes it after a restart is not built.

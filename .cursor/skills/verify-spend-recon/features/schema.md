@@ -1,6 +1,6 @@
 # Migrated schema
 
-After the API is up, the database it migrated contains the V1 tables and the one-live-match index. There is no duplicate-check column on documents. There is no HTTP route for the schema; the operator reads it with `psql` in the Postgres container.
+After the API is up, the database it migrated contains the tables and the one-live-match index. There is no duplicate-check column on documents. There is no HTTP route for the schema; the operator reads it with `psql` in the Postgres container. The Flyway check follows the highest `V<n>` file, so a later migration is part of the same proof.
 
 ## Sub-features
 
