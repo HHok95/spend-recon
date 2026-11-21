@@ -77,18 +77,7 @@ class MatchingService(
             throw TransactionAlreadyMatchedException()
         }
         val receipts = store.lockReceipts()
-        return try {
-            persist(transactionId, charge, receipts, store.heldDocumentIds())
-        } catch (_: ReceiptContendedException) {
-            if (store.hasMatch(transactionId)) {
-                throw TransactionAlreadyMatchedException()
-            }
-            try {
-                persist(transactionId, charge, receipts, store.heldDocumentIds())
-            } catch (_: ReceiptContendedException) {
-                throw TransactionAlreadyMatchedException()
-            }
-        }
+        return persist(transactionId, charge, receipts, store.heldDocumentIds())
     }
 
     private fun persist(

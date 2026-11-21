@@ -3,13 +3,11 @@ package com.hhok.spendrecon.adapters.out
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.hhok.spendrecon.application.MatchingStore
 import com.hhok.spendrecon.application.OUTBOX_MATCH_CONFIRMED
-import com.hhok.spendrecon.application.ReceiptContendedException
 import com.hhok.spendrecon.application.SaveMatch
 import com.hhok.spendrecon.application.SavedMatch
 import com.hhok.spendrecon.domain.ChargeView
 import com.hhok.spendrecon.domain.ReceiptView
 import jakarta.persistence.EntityManager
-import org.springframework.dao.DataAccessException
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Repository
 import java.sql.ResultSet
@@ -37,6 +35,8 @@ class JpaMatchingStore(
                 transactionId,
             ).firstOrNull()
 
+    // Every receipt is locked, in id order, after the charge lock. The second
+    // reconcile waits, then sees the receipt the first one stored.
     override fun lockReceipts(): List<ReceiptView> =
         jdbc.query(
             """
@@ -68,24 +68,6 @@ class JpaMatchingStore(
         ) != 0L
 
     override fun save(save: SaveMatch): SavedMatch {
-        // A unique violation aborts the Postgres transaction unless it is inside a savepoint.
-        // Hibernate's dialect will not open one, so this uses SQL directly and clears the session.
-        jdbc.execute("SAVEPOINT match_write")
-        try {
-            val saved = write(save)
-            jdbc.execute("RELEASE SAVEPOINT match_write")
-            return saved
-        } catch (exception: RuntimeException) {
-            jdbc.execute("ROLLBACK TO SAVEPOINT match_write")
-            entityManager.clear()
-            if (isUniqueViolation(exception)) {
-                throw ReceiptContendedException()
-            }
-            throw exception
-        }
-    }
-
-    private fun write(save: SaveMatch): SavedMatch {
         val now = OffsetDateTime.now(ZoneOffset.UTC)
         val candidate = save.decision.candidate
         entityManager.persist(
@@ -162,18 +144,4 @@ private fun ResultSet.toReceipt(): ReceiptView =
 private fun ResultSet.optionalLong(column: String): Long? {
     val value = getLong(column)
     return if (wasNull()) null else value
-}
-
-private fun isUniqueViolation(error: Throwable): Boolean {
-    var current: Throwable? = error
-    while (current != null) {
-        if (current is java.sql.SQLException && current.sqlState == "23505") {
-            return true
-        }
-        if (current is DataAccessException && current.cause != null && current.cause !== current) {
-            // Walk cause below.
-        }
-        current = current.cause
-    }
-    return false
 }

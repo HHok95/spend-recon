@@ -17,9 +17,6 @@ class MatchNotFoundException : RuntimeException("No match with this id.")
 /** The charge already has a match row. Reuse of that row is a later pull request. */
 class TransactionAlreadyMatchedException : RuntimeException()
 
-/** The receipt unique index rejected the insert. The caller decides again. */
-class ReceiptContendedException : RuntimeException()
-
 data class NewAuditEvent(
     val eventType: String,
     val actor: String,
