@@ -26,7 +26,7 @@ Preconditions:
 - The base URL is `http://127.0.0.1:8080`.
 - This recipe inserts fixed idempotency keys (`recon-auto-txn`, `recon-auto-doc`, `recon-auto`, `recon-none-txn`, `recon-none`, `recon-mismatch-txn`, `recon-mismatch-doc`, `recon-mismatch`, `recon-second-txn`, `recon-second`). A second drive on the same database is not a pass. Launch a new `RUN_ID`.
 
-- **Approve a perfect pair.** `.cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive reconcile` posts a `12.34` AUD charge and a matching receipt for `auto-owner`, then reconciles the charge. Result: HTTP 200, status `APPROVED`, score `1`, and rules include `R5_MERCHANT` and `R6_TAX`. `GET /matches/{id}` shows `decidedBy` `system:auto-approve` and version `0`. One `outbox` row has event type `MatchConfirmed` and a null `published_at`.
+- **Approve a perfect pair.** `.cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive reconcile` posts a `12.34` AUD charge and a matching receipt for `auto-owner`, then reconciles the charge. Result: HTTP 200, status `APPROVED`, score `1`, and rules include `R5_MERCHANT` and `R6_TAX`. `GET /matches/{id}` shows `decidedBy` `system:auto-approve` and version `0`. One `outbox` row has event type `MatchConfirmed`. The poller may already have set `published_at`.
 - **Read the audit.** `GET /matches/{id}/history` returns two events. The first is `MATCHED` by `system:matching`. The second is `APPROVED` by `system:auto-approve`, and its `after` object stores rule-set version `r1-r6.v1` and threshold `0.95`.
 - **No receipt.** A charge for `none-owner` reconciles to `EXCEPTION` with JSON score null. The stored exception type is `NO_CANDIDATE`, `documentId` is null, and `decidedBy` is null.
 - **Amount mismatch.** A `50.00` charge and a `55.00` receipt for `mismatch-owner` reconcile to `AMOUNT_MISMATCH`. The match holds that receipt id and is not approved.
@@ -38,5 +38,5 @@ Preconditions:
 - The reconcile response status is the stored status. An auto-approved match is `APPROVED` in that body, not `MATCHED`. The `MATCHED` step is the first history event.
 - Postgres stores the idempotency body as jsonb, so the replayed JSON may contain `"score": null` with a space. Both forms are a null score.
 - A receipt held by an `EXCEPTION` is not free. The second charge must not be treated as a failure when it comes back `NO_CANDIDATE`.
-- `POST /matches/{id}/approve` and `POST /matches/{id}/reject` are not built. Do not call them and record a pass.
-- The outbox row is the write. Nothing in this recipe publishes it.
+- This recipe does not call approve or reject. Those routes are `drive decisions`.
+- The outbox row is written here. Publishing it is proved by `drive decisions`, which waits until `published_at` is set.

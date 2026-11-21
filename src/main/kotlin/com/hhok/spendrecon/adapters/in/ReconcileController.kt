@@ -40,7 +40,7 @@ class ReconcileController(
             ApiResponse(responseCode = "400", description = "The transaction id or the body is invalid."),
             ApiResponse(responseCode = "401", description = "Missing or unknown X-API-Key."),
             ApiResponse(responseCode = "404", description = "No transaction with this id."),
-            ApiResponse(responseCode = "409", description = "This key is in flight, or the transaction already has a match."),
+            ApiResponse(responseCode = "409", description = "This key is in flight, or the transaction already has a match that is not rejected."),
             ApiResponse(responseCode = "422", description = "This Idempotency-Key was used with a different body."),
         ],
     )

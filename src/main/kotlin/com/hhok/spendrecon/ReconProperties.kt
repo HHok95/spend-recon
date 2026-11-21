@@ -10,6 +10,7 @@ data class ReconProperties(
     val idempotency: Idempotency,
     val autoApprove: AutoApprove,
     val exception: ExceptionHold,
+    val outbox: Outbox,
 ) {
     init {
         require(apiKey.isNotBlank()) { "recon.api-key must not be blank." }
@@ -24,6 +25,12 @@ data class ReconProperties(
         }
         require(exception.minMerchantScore >= BigDecimal.ZERO && exception.minMerchantScore <= BigDecimal.ONE) {
             "recon.exception.min-merchant-score must be from 0 to 1."
+        }
+        require(outbox.batchSize in 1..50) {
+            "recon.outbox.batch-size must be from 1 to 50."
+        }
+        require(outbox.pollInterval.toMillis() in 100..3_600_000) {
+            "recon.outbox.poll-interval must be between 100ms and 1 hour."
         }
     }
 
@@ -40,5 +47,12 @@ data class ReconProperties(
     /** Jaro-Winkler on merchant_norm. A lower score does not hold the receipt. */
     data class ExceptionHold(
         val minMerchantScore: BigDecimal,
+    )
+
+    /** batchSize is the poller's LIMIT. The architecture caps a batch at 50. */
+    data class Outbox(
+        val enabled: Boolean = true,
+        val pollInterval: Duration = Duration.ofSeconds(1),
+        val batchSize: Int = 50,
     )
 }

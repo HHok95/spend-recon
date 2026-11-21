@@ -4,6 +4,7 @@ import jakarta.persistence.Column
 import jakarta.persistence.Entity
 import jakarta.persistence.Id
 import jakarta.persistence.Table
+import jakarta.persistence.Version
 import org.hibernate.annotations.JdbcTypeCode
 import org.hibernate.type.SqlTypes
 import java.math.BigDecimal
@@ -12,7 +13,7 @@ import java.util.UUID
 
 /**
  * Mapped so Hibernate's schema check covers matches, including the text[] rules
- * and the numeric(4,3) score. Optimistic locking stays off until approve and reject.
+ * and the numeric(4,3) score. @Version is the optimistic lock for approve and reject.
  */
 @Entity
 @Table(name = "matches")
@@ -32,6 +33,7 @@ class MatchEntity(
     var rulesFired: MutableList<String> = mutableListOf(),
     @Column(name = "exception_type")
     var exceptionType: String? = null,
+    @Version
     @Column(name = "version", nullable = false)
     var version: Long = 0,
     @Column(name = "decided_by")

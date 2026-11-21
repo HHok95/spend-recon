@@ -159,6 +159,73 @@ class ReconcileApiTest : PostgresIntegrationTest() {
     }
 
     @Test
+    fun `reconciles for two owners do not share receipt locks`() {
+        val ownerA = uniqueOwner()
+        val ownerB = uniqueOwner()
+        val receiptA = createDocument(ownerA, amount = "40.00", tax = "4.00")
+        val receiptB = createDocument(ownerB, amount = "40.00", tax = "4.00")
+        val txnA = createTransaction(ownerA, amount = "40.00", tax = "4.00")
+        val txnB = createTransaction(ownerB, amount = "40.00", tax = "4.00")
+        val held = checkNotNull(jdbc.dataSource).connection
+        val pool = Executors.newFixedThreadPool(2)
+        var blocked: java.util.concurrent.Future<HttpResult>? = null
+        try {
+            held.autoCommit = false
+            held.prepareStatement("SELECT id FROM documents WHERE id = ? FOR UPDATE").use { statement ->
+                statement.setObject(1, UUID.fromString(receiptA))
+                statement.executeQuery().use { rows ->
+                    check(rows.next()) { "Receipt $receiptA was not found." }
+                }
+            }
+            val waitingForA = pool.submit<HttpResult> { reconcile(txnA) }
+            blocked = waitingForA
+            val deadline = System.nanoTime() + Duration.ofSeconds(20).toNanos()
+            var waiting = false
+            while (System.nanoTime() < deadline) {
+                if (waitingForA.isDone) {
+                    val early = waitingForA.get()
+                    throw AssertionError("owner A reconciled while its receipt lock was held: ${early.status} ${early.body}")
+                }
+                val waits =
+                    jdbc.queryForObject(
+                        """
+                        SELECT count(*)
+                        FROM pg_stat_activity
+                        WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid()
+                        """.trimIndent(),
+                        Long::class.java,
+                    )!!
+                if (waits > 0) {
+                    waiting = true
+                    break
+                }
+                Thread.sleep(50)
+            }
+            assertThat(waiting).isTrue()
+            val other = pool.submit<HttpResult> { reconcile(txnB) }
+            val resultB = other.get(20, TimeUnit.SECONDS)
+            assertThat(waitingForA.isDone).isFalse()
+            assertThat(resultB.status).isEqualTo(200)
+            assertThat(matchRow(json.readTree(resultB.body)["matchId"].asText()).documentId).isEqualTo(receiptB)
+            held.commit()
+            val resultA = waitingForA.get(20, TimeUnit.SECONDS)
+            assertThat(resultA.status).isEqualTo(200)
+            assertThat(matchRow(json.readTree(resultA.body)["matchId"].asText()).documentId).isEqualTo(receiptA)
+        } finally {
+            try {
+                held.rollback()
+            } catch (_: Exception) {
+            }
+            try {
+                blocked?.get(20, TimeUnit.SECONDS)
+            } catch (_: Exception) {
+            }
+            held.close()
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
     fun `a matched score at or above the default threshold is approved and audited`() {
         assertThat(properties.autoApprove.threshold).isEqualByComparingTo("0.95")
         val owner = uniqueOwner()

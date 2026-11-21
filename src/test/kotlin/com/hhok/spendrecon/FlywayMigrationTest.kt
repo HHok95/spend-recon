@@ -114,6 +114,22 @@ class FlywayMigrationTest : PostgresIntegrationTest() {
     }
 
     @Test
+    fun `unpublished outbox rows and match status are indexed`() {
+        val outbox =
+            jdbc.queryForObject(
+                "SELECT indexdef FROM pg_indexes WHERE indexname = 'outbox_unpublished'",
+                String::class.java,
+            )
+        assertThat(outbox).contains("published_at IS NULL")
+        val status =
+            jdbc.queryForObject(
+                "SELECT indexdef FROM pg_indexes WHERE indexname = 'matches_status'",
+                String::class.java,
+            )
+        assertThat(status).contains("(status)")
+    }
+
+    @Test
     fun `only one live match is allowed per document`() {
         val firstTransaction = UUID.randomUUID()
         val secondTransaction = UUID.randomUUID()

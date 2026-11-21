@@ -1,6 +1,6 @@
 ---
 name: verify-spend-recon
-description: Verify the spend-recon HTTP API (health, Prometheus, Scalar at /scalar, the Flyway schema, the append-only audit table, ingest with idempotency, reconcile with auto-approve, exceptions, and match history, and the local Grafana dashboard) against the Docker Compose stack. Use after a change to those routes or before claiming a later approve or reject feature works.
+description: Verify the spend-recon HTTP API (health, Prometheus, Scalar at /scalar, the Flyway schema, the append-only audit table, ingest with idempotency, reconcile with auto-approve, exceptions, and match history, approve and reject with the outbox poller, and the local Grafana dashboard) against the Docker Compose stack. Use after a change to those routes.
 ---
 
 # Verify spend-recon
@@ -52,7 +52,7 @@ It passes only when all of these are true:
 - The Prometheus container is running and publishes host port `9090`.
 - The Grafana container is running and publishes host port `3000`.
 
-Current read routes do not check an API key. A 200 without `X-API-Key` is the auth check for those routes. `POST /transactions`, `POST /documents`, and `POST /reconcile/{txnId}` require `X-API-Key`. Do not treat an open read as proof of write authentication. Grafana's local login is `admin` / `admin`, for this Compose stack only.
+Current read routes do not check an API key. A 200 without `X-API-Key` is the auth check for those routes. `POST /transactions`, `POST /documents`, `POST /reconcile/{txnId}`, `POST /matches/{id}/approve`, and `POST /matches/{id}/reject` require `X-API-Key`. Do not treat an open read as proof of write authentication. Grafana's local login is `admin` / `admin`, for this Compose stack only.
 
 ## Drive
 
@@ -66,10 +66,11 @@ Follow `features/README.md`, then one feature file. The built commands are:
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive audit
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive ingest
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive reconcile
+.cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive decisions
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive grafana
 ```
 
-`drive scalar` is the API reference check: `GET /scalar` returns the Scalar page pointed at `/v3/api-docs`, and `GET /swagger-ui/index.html` returns 404. `drive ingest` posts transactions and documents with `X-API-Key: local-dev-key`. `drive reconcile` posts a charge and a receipt, reconciles them to an auto-approved match, then checks a `NO_CANDIDATE` exception, an `AMOUNT_MISMATCH` that holds its receipt, and `GET /matches/{id}/history`. `drive grafana` checks that Prometheus reports the app target UP and that the provisioned Grafana dashboard returns `idempotent_replays_total`. Approve, reject, and outbox publishing are listed in the map and must not be reported as verified.
+`drive scalar` is the API reference check: `GET /scalar` returns the Scalar page pointed at `/v3/api-docs`, and `GET /swagger-ui/index.html` returns 404. `drive ingest` posts transactions and documents with `X-API-Key: local-dev-key`. `drive reconcile` posts a charge and a receipt, reconciles them to an auto-approved match, then checks a `NO_CANDIDATE` exception, an `AMOUNT_MISMATCH` that holds its receipt, and `GET /matches/{id}/history`. `drive decisions` approves a suggestion, rejects another match, checks a stale version and an exception reason, and waits until the outbox poller sets `published_at`. `drive grafana` checks that Prometheus reports the app target UP and that the provisioned Grafana dashboard returns `idempotent_replays_total`. `POST /matches/{id}/suggest` is listed in the map and must not be reported as verified.
 
 ## Evidence
 
@@ -106,6 +107,7 @@ export RUN_ID=proof1
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive scalar
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive ingest
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive reconcile
+.cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive decisions
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive grafana
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify evidence
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify cleanup

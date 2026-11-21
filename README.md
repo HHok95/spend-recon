@@ -2,7 +2,7 @@
 
 Card-transaction to receipt reconciliation.
 
-The locked design is [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). This service records card transactions and documents, matches a charge to a receipt, and writes one audit event per transition. Manual approve and reject, and publishing the outbox, are later pull requests.
+The locked design is [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). This service records card transactions and documents, matches a charge to a receipt, and writes one audit event per transition. A person can approve or reject a match. Approving writes an outbox row, and a poller publishes it.
 
 ## Requirements
 
@@ -41,7 +41,7 @@ Postgres is published on `localhost:5432` as database `spendrecon`, user `spendr
   User `admin`, password `admin`. That login is for this local Compose stack only. Do not reuse it on another machine.
   Grafana loads `monitoring/grafana/dashboards/spend-recon.json` at startup. The dashboard is http://localhost:3000/d/spend-recon/spend-recon
 
-The dashboard has a panel for each metric in section 9 of the architecture. `idempotent_replays_total` has samples while the app is running, because ingest registers that counter. Matching records `recon_matches_total{result}`, `recon_match_latency_seconds`, `recon_exceptions_total{type}`, and `recon_auto_approvals_total`. `optimistic_lock_conflicts_total` and `outbox_lag_seconds` stay empty until approve, reject, and outbox publishing exist. This stack does not publish stand-in series.
+The dashboard has a panel for each metric in section 9 of the architecture. `idempotent_replays_total` has samples while the app is running, because ingest registers that counter. Matching records `recon_matches_total{result}`, `recon_match_latency_seconds`, `recon_exceptions_total{type}`, and `recon_auto_approvals_total`. Approve and reject record `optimistic_lock_conflicts_total` when a version is stale. `outbox_lag_seconds` is the age of the oldest unpublished outbox row, or zero when the queue is empty.
 
 ## Ingest
 
@@ -72,4 +72,19 @@ curl -sS -D - -X POST \
   -H 'X-API-Key: local-dev-key' \
   -H 'Idempotency-Key: recon-1' \
   http://localhost:8080/reconcile/00000000-0000-0000-0000-000000000000
+```
+
+## Approve and reject
+
+`POST /matches/{id}/approve` and `POST /matches/{id}/reject` use the same two headers. The body carries the match `version` from `GET /matches/{id}`, an `actor`, and a `reason`. Reject requires a reason. Approve requires one only when the match is `EXCEPTION`. A version that is not current returns 409. The match then moves to `APPROVED` or `REJECTED`, and one audit row is written in that same transaction. Reject sets the charge back to `UNMATCHED` and frees the receipt. Approve also writes one `MatchConfirmed` outbox row.
+
+Reconciling a charge whose match is `REJECTED` reuses that same row. The row is locked, `document_id` and `score` are set to the new decision, and `version` increments. `GET /matches/{id}/history` shows the reject and then the new match. `transaction_id` stays unique. A match in any other status still returns 409. A re-match may select a receipt this charge already rejected. Skipping those receipts is not built yet.
+
+```bash
+curl -sS -D - -X POST \
+  -H 'Content-Type: application/json' \
+  -H 'X-API-Key: local-dev-key' \
+  -H 'Idempotency-Key: approve-1' \
+  -d '{"version":0,"actor":"sam","reason":"same trip"}' \
+  http://localhost:8080/matches/00000000-0000-0000-0000-000000000000/approve
 ```
