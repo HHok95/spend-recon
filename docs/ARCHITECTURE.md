@@ -78,7 +78,7 @@ outbox(id bigserial pk, aggregate_id uuid, event_type text, payload jsonb,
 - Auditable: the auto-approve event stores the score, the threshold in force, the rules fired and the rule-set version. EXCEPTION and SUGGESTED results are never auto-approved. Setting the threshold above 1.0 turns auto-approve off.
 - Metric `recon_auto_approvals_total`, so the auto-approve rate is visible.
 - Every transition writes one `reconciliation_events` row in the same database transaction.
-- An EXCEPTION holds its receipt until approved or rejected.
+- An EXCEPTION holds its receipt until approved or rejected, when the merchant score clears the minimum in section 6.
 - Matching skips a receipt already held by another live match. If no candidate remains, the result is an EXCEPTION.
 
 **Decided (Hok, 2026-11-21):** auto-approve above a score threshold, kept auditable as above. An EXCEPTION holds its receipt. Matching skips a receipt held by another live match.
@@ -86,9 +86,9 @@ outbox(id bigserial pk, aggregate_id uuid, event_type text, payload jsonb,
 ## 6. Matching rules (deterministic, ordered)
 | Rule id | Check | Effect |
 |---|---|---|
-| R1_CURRENCY | Currencies must be equal | If not: EXCEPTION CURRENCY_MISMATCH, never auto-matched |
+| R1_CURRENCY | Currencies must be equal | If not, and the merchant score clears the minimum: EXCEPTION CURRENCY_MISMATCH, never auto-matched |
 | R2_OWNER | Same card owner | Hard filter |
-| R3_AMOUNT | `amount_minor` equal | If one candidate is unequal: EXCEPTION AMOUNT_MISMATCH |
+| R3_AMOUNT | `amount_minor` equal | If one candidate is unequal and its merchant score clears the minimum: EXCEPTION AMOUNT_MISMATCH |
 | R4_DATE | \|txn_date − doc_date\| ≤ 3 days | Hard filter |
 | R5_MERCHANT | Jaro-Winkler on `merchant_norm` | Score component |
 | R6_TAX | Tax present on both and equal | Score component |
@@ -97,6 +97,10 @@ outbox(id bigserial pk, aggregate_id uuid, event_type text, payload jsonb,
 Score = 0.7·merchant + 0.3·tax. A score ≥ 0.85 gives MATCHED. A lower score gives SUGGESTED, and the best candidate wins. When two candidates tie, the result is SUGGESTED with both listed.
 
 Zero candidate receipts gives EXCEPTION NO_CANDIDATE, with `document_id` null and `score` null. That is also the result when every receipt is already held by another live match. `score` is null exactly when the match has no receipt.
+
+A receipt that fails R1 or R3 is held only when Jaro-Winkler on `merchant_norm` is at least `recon.exception.min-merchant-score` (default 0.60, the same 0-to-1 scale as R5). If no failing receipt clears that score, the result is NO_CANDIDATE with no receipt and a null score. The exception audit event stores `minMerchantScore`, the value in force, the same way an auto-approve event stores its threshold.
+
+**Decided (Hok, 2026-11-22):** an EXCEPTION holds a receipt only when the merchant score is at least `recon.exception.min-merchant-score`. Otherwise the result is NO_CANDIDATE.
 
 ## 7. API (all writes need `X-API-Key` and `Idempotency-Key`)
 ```

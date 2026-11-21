@@ -9,6 +9,7 @@ data class ReconProperties(
     val apiKey: String,
     val idempotency: Idempotency,
     val autoApprove: AutoApprove,
+    val exception: ExceptionHold,
 ) {
     init {
         require(apiKey.isNotBlank()) { "recon.api-key must not be blank." }
@@ -21,6 +22,9 @@ data class ReconProperties(
         require(autoApprove.threshold >= BigDecimal.ZERO) {
             "recon.auto-approve.threshold must be zero or greater."
         }
+        require(exception.minMerchantScore >= BigDecimal.ZERO && exception.minMerchantScore <= BigDecimal.ONE) {
+            "recon.exception.min-merchant-score must be from 0 to 1."
+        }
     }
 
     data class Idempotency(
@@ -31,5 +35,10 @@ data class ReconProperties(
     /** A value above 1 disables auto-approve. The matched cutoff stays 0.85. */
     data class AutoApprove(
         val threshold: BigDecimal,
+    )
+
+    /** Jaro-Winkler on merchant_norm. A lower score does not hold the receipt. */
+    data class ExceptionHold(
+        val minMerchantScore: BigDecimal,
     )
 }

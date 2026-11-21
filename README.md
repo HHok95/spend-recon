@@ -65,7 +65,7 @@ curl -sS -D - \
 
 `POST /reconcile/{txnId}` uses the same two headers. The body may be empty. A match whose score is at least `0.95` and whose status is `MATCHED` is stored as `APPROVED`, with actor `system:auto-approve`. The response status is that stored status. `GET /matches/{id}/history` returns one event per transition. `GET /matches/{id}` includes `version`.
 
-A charge with no receipt returns status `EXCEPTION`, exception type `NO_CANDIDATE`, and JSON `score` null. A charge that finds one receipt with a different amount returns `AMOUNT_MISMATCH` and keeps that receipt. Another charge cannot take a receipt a live match already holds.
+A charge with no receipt returns status `EXCEPTION`, exception type `NO_CANDIDATE`, and JSON `score` null. A charge that finds one receipt with a different amount keeps that receipt as `AMOUNT_MISMATCH` when the merchant names score at least 0.60. A more distant merchant name leaves the receipt free. Another charge cannot take a receipt a live match already holds.
 
 ```bash
 curl -sS -D - -X POST \

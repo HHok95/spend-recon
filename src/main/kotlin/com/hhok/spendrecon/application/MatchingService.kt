@@ -86,7 +86,7 @@ class MatchingService(
         receipts: List<ReceiptView>,
         held: Set<UUID>,
     ): Persisted {
-        val decision = matchReceipts(charge, receipts, held)
+        val decision = matchReceipts(charge, receipts, held, properties.exception.minMerchantScore)
         val approved =
             shouldAutoApprove(
                 decision.status,
@@ -187,6 +187,9 @@ class MatchingService(
             )
         if (decision.tiedDocumentIds.isNotEmpty()) {
             body["tiedDocumentIds"] = decision.tiedDocumentIds
+        }
+        if (decision.exceptionType != null) {
+            body["minMerchantScore"] = properties.exception.minMerchantScore
         }
         if (includeThreshold) {
             body["threshold"] = properties.autoApprove.threshold

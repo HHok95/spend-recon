@@ -87,6 +87,8 @@ class ReconcileApiTest : PostgresIntegrationTest() {
         assertThat(stored.score).isEqualByComparingTo("1.000")
         assertThat(stored.decidedBy).isNull()
         assertThat(eventActors(matchA)).containsExactly(ACTOR_MATCHING)
+        val heldHistory = json.readTree(get("/matches/$matchA/history").body)
+        assertThat(heldHistory[0]["after"]["minMerchantScore"].decimalValue()).isEqualByComparingTo("0.60")
         assertThat(counter("recon_auto_approvals")).isEqualTo(beforeApprovals)
 
         val chargeB = createTransaction(owner, amount = "55.00", tax = "5.00")
@@ -99,6 +101,36 @@ class ReconcileApiTest : PostgresIntegrationTest() {
         assertThat(storedB.documentId).isNull()
         assertThat(storedB.exceptionType).isEqualTo("NO_CANDIDATE")
         assertThat(matchRow(matchA).documentId).isEqualTo(receipt)
+    }
+
+    @Test
+    fun `an amount mismatch with a different merchant leaves the receipt free`() {
+        val owner = uniqueOwner()
+        val receipt = createDocument(owner, merchant = "Zzzzz", amount = "55.00", tax = "5.00")
+        val chargeA = createTransaction(owner, merchant = "Acme", amount = "50.00", tax = "5.00")
+        val first = reconcile(chargeA)
+        assertThat(first.status).isEqualTo(200)
+        val firstBody = json.readTree(first.body)
+        assertThat(firstBody["status"].asText()).isEqualTo("EXCEPTION")
+        assertThat(firstBody["score"].isNull).isTrue()
+        val matchA = firstBody["matchId"].asText()
+        val storedA = matchRow(matchA)
+        assertThat(storedA.exceptionType).isEqualTo("NO_CANDIDATE")
+        assertThat(storedA.documentId).isNull()
+        assertThat(storedA.score).isNull()
+        val history = json.readTree(get("/matches/$matchA/history").body)
+        assertThat(history).hasSize(1)
+        assertThat(history[0]["after"]["minMerchantScore"].decimalValue()).isEqualByComparingTo("0.60")
+        assertThat(history[0]["after"]["exceptionType"].asText()).isEqualTo("NO_CANDIDATE")
+
+        val chargeB = createTransaction(owner, merchant = "Zzzzz", amount = "55.00", tax = "5.00")
+        val second = reconcile(chargeB)
+        assertThat(second.status).isEqualTo(200)
+        val secondBody = json.readTree(second.body)
+        assertThat(secondBody["status"].asText()).isEqualTo("APPROVED")
+        val storedB = matchRow(secondBody["matchId"].asText())
+        assertThat(storedB.documentId).isEqualTo(receipt)
+        assertThat(storedB.exceptionType).isNull()
     }
 
     @Test

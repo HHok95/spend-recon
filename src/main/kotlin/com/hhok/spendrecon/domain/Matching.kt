@@ -126,6 +126,16 @@ fun merchantSimilarity(
 ): Double = jaroWinkler(chargeNorm, receiptNorm)
 
 /**
+ * A currency or amount miss holds its receipt only when the merchant names are at least this close.
+ * The comparison is the R5 Jaro-Winkler value, from 0 to 1.
+ */
+fun merchantClearsExceptionHold(
+    chargeNorm: String,
+    receiptNorm: String,
+    minimum: BigDecimal,
+): Boolean = merchantSimilarity(chargeNorm, receiptNorm) >= minimum.toDouble()
+
+/**
  * R6. 1 when tax is present on both sides and equal, otherwise 0.
  * A null tax is absent. Zero is present.
  */
@@ -181,14 +191,17 @@ fun shouldAutoApprove(
  * Owner (R2), date (R4), and a receipt already held by a live match are hard filters:
  * the receipt is skipped and is not pinned. Currency (R1) and amount (R3) run on what
  * remains. One survivor that fails either check becomes an EXCEPTION that holds that
- * receipt. Several survivors that all fail the same check become an EXCEPTION with no
- * receipt, so an arbitrary receipt is not blocked. Passing receipts are scored.
+ * receipt, and only when the merchant names clear [minMerchantScore]. Otherwise the
+ * result is NO_CANDIDATE with no receipt. Several survivors that all fail the same
+ * check, and clear the merchant bar, become an EXCEPTION with no receipt, so an
+ * arbitrary receipt is not blocked. Passing receipts are scored.
  * A tie is SUGGESTED and the lowest document id is the one the row holds.
  */
 fun matchReceipts(
     charge: ChargeView,
     receipts: List<ReceiptView>,
     heldDocumentIds: Set<UUID>,
+    minMerchantScore: BigDecimal = BigDecimal("0.60"),
 ): MatchDecision {
     val survivors =
         receipts.filter { receipt ->
@@ -201,11 +214,11 @@ fun matchReceipts(
     }
     val sameCurrency = survivors.filter { currenciesEqual(charge.currency, it.currency) }
     if (sameCurrency.isEmpty()) {
-        return currencyException(charge, survivors)
+        return currencyException(charge, survivors, minMerchantScore)
     }
     val sameAmount = sameCurrency.filter { amountsEqual(charge.amountMinor, it.amountMinor) }
     if (sameAmount.isEmpty()) {
-        return amountException(charge, sameCurrency)
+        return amountException(charge, sameCurrency, minMerchantScore)
     }
     val scored = sameAmount.map { receipt -> receipt to scoreOf(charge, receipt) }
     val best = scored.maxOf { it.second.score }
@@ -231,13 +244,21 @@ fun matchReceipts(
 private fun currencyException(
     charge: ChargeView,
     survivors: List<ReceiptView>,
+    minMerchantScore: BigDecimal,
 ): MatchDecision {
-    if (survivors.size != 1) {
+    val eligible =
+        survivors.filter {
+            merchantClearsExceptionHold(charge.merchantNorm, it.merchantNorm, minMerchantScore)
+        }
+    if (eligible.isEmpty()) {
+        return exception(ExceptionType.NO_CANDIDATE, candidate = null, rulesFired = emptyList())
+    }
+    if (eligible.size != 1) {
         return exception(ExceptionType.CURRENCY_MISMATCH, candidate = null, rulesFired = listOf(RuleId.R1_CURRENCY))
     }
     return exception(
         ExceptionType.CURRENCY_MISMATCH,
-        candidate = scoreOf(charge, survivors.single()),
+        candidate = scoreOf(charge, eligible.single()),
         rulesFired = listOf(RuleId.R1_CURRENCY, RuleId.R2_OWNER, RuleId.R4_DATE, RuleId.R5_MERCHANT, RuleId.R6_TAX),
     )
 }
@@ -245,8 +266,16 @@ private fun currencyException(
 private fun amountException(
     charge: ChargeView,
     sameCurrency: List<ReceiptView>,
+    minMerchantScore: BigDecimal,
 ): MatchDecision {
-    if (sameCurrency.size != 1) {
+    val eligible =
+        sameCurrency.filter {
+            merchantClearsExceptionHold(charge.merchantNorm, it.merchantNorm, minMerchantScore)
+        }
+    if (eligible.isEmpty()) {
+        return exception(ExceptionType.NO_CANDIDATE, candidate = null, rulesFired = emptyList())
+    }
+    if (eligible.size != 1) {
         return exception(
             ExceptionType.AMOUNT_MISMATCH,
             candidate = null,
@@ -255,7 +284,7 @@ private fun amountException(
     }
     return exception(
         ExceptionType.AMOUNT_MISMATCH,
-        candidate = scoreOf(charge, sameCurrency.single()),
+        candidate = scoreOf(charge, eligible.single()),
         rulesFired = ALL_RULES,
     )
 }

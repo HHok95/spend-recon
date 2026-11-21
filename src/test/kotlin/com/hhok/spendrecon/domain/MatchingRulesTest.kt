@@ -47,6 +47,53 @@ class MatchingRulesTest {
     }
 
     @Test
+    fun `an amount mismatch holds a similar merchant and releases a different one`() {
+        val similar = receipt(merchant = "marhta", amount = 5500)
+        val held =
+            matchReceipts(
+                charge(merchant = "martha", amount = 5000),
+                listOf(similar),
+                emptySet(),
+            )
+        assertThat(merchantSimilarity("martha", "marhta")).isGreaterThan(0.60)
+        assertThat(held.exceptionType).isEqualTo(ExceptionType.AMOUNT_MISMATCH)
+        assertThat(held.candidate?.documentId).isEqualTo(similar.documentId)
+
+        val distant = receipt(merchant = "zzzz", amount = 5500)
+        val released =
+            matchReceipts(
+                charge(merchant = "acme", amount = 5000),
+                listOf(distant),
+                emptySet(),
+            )
+        assertThat(merchantSimilarity("acme", "zzzz")).isLessThan(0.60)
+        assertThat(released.exceptionType).isEqualTo(ExceptionType.NO_CANDIDATE)
+        assertThat(released.candidate).isNull()
+        assertThat(released.rulesFired).isEmpty()
+
+        val later = matchReceipts(charge(merchant = "zzzz", amount = 5500), listOf(distant), emptySet())
+        assertThat(later.candidate?.documentId).isEqualTo(distant.documentId)
+        assertThat(later.status).isEqualTo(MatchStatus.MATCHED)
+    }
+
+    @Test
+    fun `an amount mismatch holds the receipt at merchant score 0_60`() {
+        assertThat(merchantSimilarity("abcde", "xabyz")).isEqualTo(0.6)
+        val receipt = receipt(merchant = "xabyz", amount = 5500)
+        val charge = charge(merchant = "abcde", amount = 5000)
+
+        val atBar = matchReceipts(charge, listOf(receipt), emptySet(), BigDecimal("0.60"))
+        assertThat(merchantClearsExceptionHold("abcde", "xabyz", BigDecimal("0.60"))).isTrue()
+        assertThat(atBar.exceptionType).isEqualTo(ExceptionType.AMOUNT_MISMATCH)
+        assertThat(atBar.candidate?.documentId).isEqualTo(receipt.documentId)
+
+        val under = matchReceipts(charge, listOf(receipt), emptySet(), BigDecimal("0.61"))
+        assertThat(merchantClearsExceptionHold("abcde", "xabyz", BigDecimal("0.61"))).isFalse()
+        assertThat(under.exceptionType).isEqualTo(ExceptionType.NO_CANDIDATE)
+        assertThat(under.candidate).isNull()
+    }
+
+    @Test
     fun `R4_DATE keeps a receipt three days away and drops one four days away`() {
         val inside = receipt(date = DAY.plusDays(3), merchant = "other")
         val kept = matchReceipts(charge(), listOf(inside), emptySet())

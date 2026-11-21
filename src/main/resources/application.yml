@@ -56,3 +56,7 @@ recon:
     # A MATCHED score at or above this value is approved in the same transaction.
     # Quoted so YAML does not turn it into a binary float. Above 1 disables auto-approve.
     threshold: "0.95"
+  exception:
+    # A currency or amount miss holds the receipt only when Jaro-Winkler on
+    # merchant_norm is at least this value. Quoted so YAML keeps it decimal.
+    min-merchant-score: "0.60"
