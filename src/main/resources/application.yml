@@ -60,3 +60,8 @@ recon:
     # A currency or amount miss holds the receipt only when Jaro-Winkler on
     # merchant_norm is at least this value. Quoted so YAML keeps it decimal.
     min-merchant-score: "0.60"
+  outbox:
+    # Publishes MatchConfirmed rows. Tests turn this off and call the publisher themselves.
+    enabled: true
+    poll-interval: 1s
+    batch-size: 50

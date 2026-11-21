@@ -47,37 +47,45 @@ class MatchingService(
         idempotencyKey: String,
         rawBody: ByteArray,
         transactionId: UUID,
-    ): StoredHttpResponse =
-        idempotency.execute(
-            key = idempotencyKey,
-            endpoint = IdempotencyEndpoints.reconcile(transactionId),
-            requestHash = requestSha256(rawBody),
-        ) {
-            val started = System.nanoTime()
-            val saved = decideAndSave(transactionId)
-            latency.record(Duration.ofNanos(System.nanoTime() - started))
-            StoredHttpResponse(
-                status = 200,
-                body =
-                    json.writeValueAsString(
-                        ReconcileResponse(
-                            matchId = saved.matchId,
-                            status = saved.finalStatus.name,
-                            score = saved.score,
-                            rulesFired = saved.rulesFired,
+    ): StoredHttpResponse {
+        val started = System.nanoTime()
+        var pending: PendingCount? = null
+        val response =
+            idempotency.execute(
+                key = idempotencyKey,
+                endpoint = IdempotencyEndpoints.reconcile(transactionId),
+                requestHash = requestSha256(rawBody),
+            ) {
+                val saved = decideAndSave(transactionId)
+                latency.record(Duration.ofNanos(System.nanoTime() - started))
+                pending = PendingCount(decision = saved.decision, approved = saved.approved)
+                StoredHttpResponse(
+                    status = 200,
+                    body =
+                        json.writeValueAsString(
+                            ReconcileResponse(
+                                matchId = saved.matchId,
+                                status = saved.finalStatus.name,
+                                score = saved.score,
+                                rulesFired = saved.rulesFired,
+                            ),
                         ),
-                    ),
-                replay = false,
-            )
-        }
+                    replay = false,
+                )
+            }
+        // Counters move after the idempotency transaction commits. A rolled-back match is not a match.
+        pending?.let { count(it.decision, it.approved) }
+        return response
+    }
 
     private fun decideAndSave(transactionId: UUID): Persisted {
         val charge = store.lockCharge(transactionId) ?: throw TransactionNotFoundException()
-        if (store.hasMatch(transactionId)) {
+        val existing = store.lockMatch(transactionId)
+        if (existing != null && existing.status != MatchStatus.REJECTED) {
             throw TransactionAlreadyMatchedException()
         }
-        val receipts = store.lockReceipts()
-        return persist(transactionId, charge, receipts, store.heldDocumentIds())
+        val receipts = store.lockReceipts(charge.ownerId, charge.txnDate)
+        return persist(transactionId, charge, receipts, store.heldDocumentIds(), existing)
     }
 
     private fun persist(
@@ -85,6 +93,7 @@ class MatchingService(
         charge: ChargeView,
         receipts: List<ReceiptView>,
         held: Set<UUID>,
+        existing: LockedMatch?,
     ): Persisted {
         val decision = matchReceipts(charge, receipts, held, properties.exception.minMerchantScore)
         val approved =
@@ -94,8 +103,8 @@ class MatchingService(
                 properties.autoApprove.threshold,
             )
         val finalStatus = if (approved) MatchStatus.APPROVED else decision.status
-        val matchId = UUID.randomUUID()
-        val events = auditEvents(decision, approved)
+        val matchId = existing?.matchId ?: UUID.randomUUID()
+        val events = auditEvents(decision, approved, existing?.let { rejectedSnapshot(it) })
         val saved =
             store.save(
                 SaveMatch(
@@ -106,15 +115,17 @@ class MatchingService(
                     decidedBy = if (approved) ACTOR_AUTO_APPROVE else null,
                     events = events,
                     outboxPayload = if (approved) outboxPayload(matchId, transactionId, decision) else null,
+                    reopening = existing != null,
                 ),
             )
-        count(decision, approved)
         return Persisted(
             matchId = saved.matchId,
             version = saved.version,
             finalStatus = finalStatus,
             score = decision.candidate?.score,
             rulesFired = decision.rulesFired.map { it.name },
+            decision = decision,
+            approved = approved,
         )
     }
 
@@ -144,6 +155,7 @@ class MatchingService(
     private fun auditEvents(
         decision: MatchDecision,
         approved: Boolean,
+        openingBefore: String?,
     ): List<NewAuditEvent> {
         val fired = decision.rulesFired.map { it.name }
         val decided = snapshot(decision.status, decision, includeThreshold = false)
@@ -152,7 +164,7 @@ class MatchingService(
                 eventType = decision.status.name,
                 actor = ACTOR_MATCHING,
                 rulesFired = fired,
-                beforeJson = null,
+                beforeJson = openingBefore,
                 afterJson = json.writeValueAsString(decided),
             )
         if (!approved) {
@@ -170,6 +182,20 @@ class MatchingService(
             ),
         )
     }
+
+    /** The REJECTED row, so the next history event shows what the re-match left. */
+    private fun rejectedSnapshot(existing: LockedMatch): String =
+        json.writeValueAsString(
+            linkedMapOf(
+                "status" to MatchStatus.REJECTED.name,
+                "version" to existing.version,
+                "score" to existing.score,
+                "documentId" to existing.documentId,
+                "exceptionType" to existing.exceptionType,
+                "rulesFired" to existing.rulesFired,
+                "ruleSetVersion" to RuleSet.VERSION,
+            ),
+        )
 
     private fun snapshot(
         status: MatchStatus,
@@ -218,5 +244,12 @@ class MatchingService(
         val finalStatus: MatchStatus,
         val score: java.math.BigDecimal?,
         val rulesFired: List<String>,
+        val decision: MatchDecision,
+        val approved: Boolean,
+    )
+
+    private data class PendingCount(
+        val decision: MatchDecision,
+        val approved: Boolean,
     )
 }

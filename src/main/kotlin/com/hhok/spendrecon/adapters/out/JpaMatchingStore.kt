@@ -1,12 +1,15 @@
 package com.hhok.spendrecon.adapters.out
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.hhok.spendrecon.application.LockedMatch
 import com.hhok.spendrecon.application.MatchingStore
 import com.hhok.spendrecon.application.OUTBOX_MATCH_CONFIRMED
 import com.hhok.spendrecon.application.SaveMatch
 import com.hhok.spendrecon.application.SavedMatch
 import com.hhok.spendrecon.domain.ChargeView
+import com.hhok.spendrecon.domain.MatchStatus
 import com.hhok.spendrecon.domain.ReceiptView
+import com.hhok.spendrecon.domain.RuleSet
 import jakarta.persistence.EntityManager
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Repository
@@ -35,18 +38,28 @@ class JpaMatchingStore(
                 transactionId,
             ).firstOrNull()
 
-    // Every receipt is locked, in id order, after the charge lock. The second
-    // reconcile waits, then sees the receipt the first one stored.
-    override fun lockReceipts(): List<ReceiptView> =
+    // Same owner and the three-day window are already hard filters, so rows
+    // outside them cannot change this decision. Locking only those rows, in id
+    // order, lets a different owner reconcile at the same time.
+    override fun lockReceipts(
+        ownerId: String,
+        txnDate: LocalDate,
+    ): List<ReceiptView> =
         jdbc.query(
             """
             SELECT id, card_owner_id, merchant_norm, amount_minor, currency, tax_minor, doc_date
             FROM documents
             WHERE kind = 'RECEIPT'
+              AND card_owner_id = ?
+              AND doc_date BETWEEN ? AND ?
             ORDER BY id
             FOR UPDATE
             """.trimIndent(),
-        ) { rs, _ -> rs.toReceipt() }
+            { rs, _ -> rs.toReceipt() },
+            ownerId,
+            txnDate.minusDays(RuleSet.DATE_WINDOW_DAYS),
+            txnDate.plusDays(RuleSet.DATE_WINDOW_DAYS),
+        )
 
     override fun heldDocumentIds(): Set<UUID> =
         jdbc
@@ -60,38 +73,29 @@ class JpaMatchingStore(
             ) { rs, _ -> rs.getObject("document_id", UUID::class.java) }
             .toSet()
 
-    override fun hasMatch(transactionId: UUID): Boolean =
-        jdbc.queryForObject(
-            "SELECT count(*) FROM matches WHERE transaction_id = ?",
-            Long::class.java,
-            transactionId,
-        ) != 0L
+    override fun lockMatch(transactionId: UUID): LockedMatch? =
+        jdbc
+            .query(
+                """
+                SELECT id, status, version, document_id, score, exception_type, rules_fired
+                FROM matches
+                WHERE transaction_id = ?
+                FOR UPDATE
+                """.trimIndent(),
+                { rs, _ -> rs.toLockedMatch() },
+                transactionId,
+            ).firstOrNull()
 
     override fun save(save: SaveMatch): SavedMatch {
         val now = OffsetDateTime.now(ZoneOffset.UTC)
-        val candidate = save.decision.candidate
-        entityManager.persist(
-            MatchEntity(
-                id = save.matchId,
-                transactionId = save.transactionId,
-                documentId = candidate?.documentId,
-                status = save.finalStatus.name,
-                score = candidate?.score,
-                rulesFired = save.decision.rulesFired.map { it.name }.toMutableList(),
-                exceptionType = save.decision.exceptionType?.name,
-                version = 0,
-                decidedBy = save.decidedBy,
-                decidedAt = if (save.decidedBy == null) null else now,
-                createdAt = now,
-            ),
-        )
-        entityManager.flush()
+        val version = if (save.reopening) reopen(save, now) else insert(save, now)
         save.events.forEach { event ->
             entityManager.persist(
                 ReconciliationEventEntity(
                     matchId = save.matchId,
                     eventType = event.eventType,
                     actor = event.actor,
+                    reason = event.reason,
                     rulesFired = event.rulesFired.toMutableList(),
                     beforeState = event.beforeJson?.let { json.readTree(it) },
                     afterState = event.afterJson?.let { json.readTree(it) },
@@ -116,7 +120,75 @@ class JpaMatchingStore(
             save.finalStatus.name,
             save.transactionId,
         )
-        return SavedMatch(save.matchId, version = 0, finalStatus = save.finalStatus)
+        return SavedMatch(save.matchId, version = version, finalStatus = save.finalStatus)
+    }
+
+    private fun insert(
+        save: SaveMatch,
+        now: OffsetDateTime,
+    ): Long {
+        val candidate = save.decision.candidate
+        entityManager.persist(
+            MatchEntity(
+                id = save.matchId,
+                transactionId = save.transactionId,
+                documentId = candidate?.documentId,
+                status = save.finalStatus.name,
+                score = candidate?.score,
+                rulesFired = save.decision.rulesFired.map { it.name }.toMutableList(),
+                exceptionType = save.decision.exceptionType?.name,
+                version = 0,
+                decidedBy = save.decidedBy,
+                decidedAt = if (save.decidedBy == null) null else now,
+                createdAt = now,
+            ),
+        )
+        entityManager.flush()
+        return 0
+    }
+
+    /**
+     * The row is already locked. Hibernate's version column increments on this
+     * update, so a concurrent writer of the same row cannot both commit.
+     */
+    private fun reopen(
+        save: SaveMatch,
+        now: OffsetDateTime,
+    ): Long {
+        val match =
+            entityManager.find(MatchEntity::class.java, save.matchId)
+                ?: error("Match ${save.matchId} disappeared after it was locked.")
+        val candidate = save.decision.candidate
+        match.documentId = candidate?.documentId
+        match.status = save.finalStatus.name
+        match.score = candidate?.score
+        match.rulesFired.clear()
+        match.rulesFired.addAll(save.decision.rulesFired.map { it.name })
+        match.exceptionType = save.decision.exceptionType?.name
+        match.decidedBy = save.decidedBy
+        match.decidedAt = if (save.decidedBy == null) null else now
+        entityManager.flush()
+        return match.version
+    }
+}
+
+private fun ResultSet.toLockedMatch(): LockedMatch =
+    LockedMatch(
+        matchId = getObject("id", UUID::class.java),
+        status = MatchStatus.valueOf(getString("status")),
+        version = getLong("version"),
+        documentId = getObject("document_id", UUID::class.java),
+        score = getBigDecimal("score"),
+        exceptionType = getString("exception_type"),
+        rulesFired = textList("rules_fired"),
+    )
+
+private fun ResultSet.textList(column: String): List<String> {
+    val sqlArray = getArray(column) ?: return emptyList()
+    val raw = sqlArray.array
+    return when (raw) {
+        is Array<*> -> raw.map { it.toString() }
+        else -> emptyList()
     }
 }
 

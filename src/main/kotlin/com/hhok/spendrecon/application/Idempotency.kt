@@ -19,6 +19,10 @@ object IdempotencyEndpoints {
     const val DOCUMENTS = "POST /documents"
 
     fun reconcile(transactionId: java.util.UUID): String = "POST /reconcile/$transactionId"
+
+    fun approve(matchId: java.util.UUID): String = "POST /matches/$matchId/approve"
+
+    fun reject(matchId: java.util.UUID): String = "POST /matches/$matchId/reject"
 }
 
 /** The key's response is not stored yet. The HTTP layer answers 409 with Retry-After. */

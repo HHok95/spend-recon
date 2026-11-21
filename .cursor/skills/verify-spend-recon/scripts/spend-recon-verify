@@ -9,7 +9,7 @@ COMPOSE_FILE="$ROOT/docker-compose.yml"
 
 usage() {
   echo "usage: RUN_ID=<id> $0 launch|doctor|drive <feature>|evidence|cleanup" >&2
-  echo "features: health prometheus scalar schema audit ingest reconcile grafana" >&2
+  echo "features: health prometheus scalar schema audit ingest reconcile decisions grafana" >&2
   exit 2
 }
 
@@ -270,7 +270,7 @@ doctor() {
     echo "Doctor failed. See $EVIDENCE_DIR/doctor/doctor.txt" >&2
     exit 1
   fi
-  echo "Doctor passed. Read routes do not require an API key. POST /transactions, POST /documents, and POST /reconcile/{txnId} do. Grafana's local login is admin / admin."
+  echo "Doctor passed. Read routes do not require an API key. POST /transactions, POST /documents, POST /reconcile/{txnId}, POST /matches/{id}/approve, and POST /matches/{id}/reject do. Grafana's local login is admin / admin."
 }
 
 curl_capture() {
@@ -347,6 +347,10 @@ drive_schema() {
   [[ "$hash_count" == "0" ]] || { echo "documents.content_hash exists" >&2; exit 1; }
   psql_exec -tAc "SELECT indexdef FROM pg_indexes WHERE indexname = 'matches_one_live_per_document'" >"$dir/indexdef.txt"
   grep -q 'UNIQUE' "$dir/indexdef.txt" && grep -q 'REJECTED' "$dir/indexdef.txt" || { echo "live-match index missing" >&2; exit 1; }
+  psql_exec -tAc "SELECT indexdef FROM pg_indexes WHERE indexname = 'outbox_unpublished'" >"$dir/outbox-index.txt"
+  grep -q 'published_at IS NULL' "$dir/outbox-index.txt" || { echo "outbox unpublished index missing" >&2; exit 1; }
+  psql_exec -tAc "SELECT indexdef FROM pg_indexes WHERE indexname = 'matches_status'" >"$dir/matches-status-index.txt"
+  grep -q '(status)' "$dir/matches-status-index.txt" || { echo "matches status index missing" >&2; exit 1; }
   local version failed expected
   expected="$(highest_migration_version)"
   if ! flyway_read; then
@@ -692,7 +696,7 @@ if abs(float(after["threshold"]) - 0.95) > 0.0001:
     raise SystemExit(f"threshold {after.get('threshold')}")
 PY
   local outbox
-  outbox="$(psql_exec -tAc "SELECT count(*) FROM outbox WHERE aggregate_id = '$auto_match' AND event_type = 'MatchConfirmed' AND published_at IS NULL" | tr -d '[:space:]')"
+  outbox="$(psql_exec -tAc "SELECT count(*) FROM outbox WHERE aggregate_id = '$auto_match' AND event_type = 'MatchConfirmed'" | tr -d '[:space:]')"
   [[ "$outbox" == "1" ]] || { echo "outbox count $outbox" >&2; exit 1; }
 
   printf '%s' '{"cardOwnerId":"none-owner","merchant":"Lonely Cafe","amount":"20.00","currency":"AUD","txnDate":"2026-11-21"}' >"$root/none-txn.json"
@@ -803,6 +807,250 @@ if "recon_match_latency_seconds" not in after:
 PY
   echo "reconcile passed"
 }
+
+drive_decisions() {
+  local root="$EVIDENCE_DIR/decisions"
+  local api="local-dev-key"
+  mkdir -p "$root"
+  local code
+
+  code="$(curl -sS --max-time 20 -o "$root/prometheus-before.txt" -w '%{http_code}' "$BASE_URL/actuator/prometheus" 2>"$root/prometheus-before.stderr.txt")"
+  [[ "$code" == "200" ]] || { echo "prometheus before HTTP $code" >&2; exit 1; }
+
+  printf '%s' '{"cardOwnerId":"suggest-owner","merchant":"Cafe","amount":"8.00","currency":"AUD","txnDate":"2026-11-21"}' >"$root/sug-txn.json"
+  code="$(post_json "$root/sug-txn" "$BASE_URL/transactions" "dec-sug-txn" "$root/sug-txn.json" "$api")"
+  [[ "$code" == "201" ]] || { echo "suggest transaction HTTP $code" >&2; exit 1; }
+  printf '%s' '{"kind":"RECEIPT","cardOwnerId":"suggest-owner","merchant":"Cafe","amount":"8.00","currency":"AUD","docDate":"2026-11-21"}' >"$root/sug-doc.json"
+  code="$(post_json "$root/sug-doc" "$BASE_URL/documents" "dec-sug-doc" "$root/sug-doc.json" "$api")"
+  [[ "$code" == "201" ]] || { echo "suggest document HTTP $code" >&2; exit 1; }
+  local sug_txn
+  sug_txn="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$root/sug-txn/body.json")"
+  code="$(reconcile_empty "$root/sug" "$BASE_URL/reconcile/$sug_txn" "dec-sug")"
+  [[ "$code" == "200" ]] || { echo "suggest reconcile HTTP $code" >&2; exit 1; }
+  local sug_match
+  sug_match="$(python3 - "$root/sug/body.json" <<'PY'
+import json, pathlib, sys
+body = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if body["status"] != "SUGGESTED":
+    raise SystemExit(f"suggest status {body['status']}")
+if abs(float(body["score"]) - 0.7) > 0.001:
+    raise SystemExit(f"suggest score {body['score']}")
+print(body["matchId"])
+PY
+)"
+  code="$(get_url "$root/sug-get" "$BASE_URL/matches/$sug_match")"
+  [[ "$code" == "200" ]] || { echo "suggest get HTTP $code" >&2; exit 1; }
+  python3 - "$root/sug-get/body.json" <<'PY'
+import json, pathlib, sys
+body = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if body["version"] != 0 or body["status"] != "SUGGESTED" or body["decidedBy"] is not None:
+    raise SystemExit(f"suggest match {body}")
+PY
+
+  printf '%s' '{"version":0,"actor":"sam","reason":"looks right"}' >"$root/approve.json"
+  code="$(post_json "$root/approve" "$BASE_URL/matches/$sug_match/approve" "dec-sug-approve" "$root/approve.json" "$api")"
+  [[ "$code" == "200" ]] || { echo "approve HTTP $code" >&2; cat "$root/approve/body.json" >&2; exit 1; }
+  python3 - "$root/approve/body.json" "$sug_match" <<'PY'
+import json, pathlib, sys
+body = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if body["status"] != "APPROVED" or body["version"] != 1 or body["matchId"] != sys.argv[2]:
+    raise SystemExit(f"approve body {body}")
+PY
+
+  code="$(get_url "$root/approve-history" "$BASE_URL/matches/$sug_match/history")"
+  [[ "$code" == "200" ]] || { echo "approve history HTTP $code" >&2; exit 1; }
+  python3 - "$root/approve-history/body.json" <<'PY'
+import json, pathlib, sys
+events = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if len(events) != 2:
+    raise SystemExit(f"history length {len(events)}")
+if events[0]["eventType"] != "SUGGESTED" or events[0]["actor"] != "system:matching":
+    raise SystemExit(f"first {events[0]}")
+if events[1]["eventType"] != "APPROVED" or events[1]["actor"] != "sam" or events[1]["reason"] != "looks right":
+    raise SystemExit(f"second {events[1]}")
+PY
+
+  code="$(post_json "$root/approve-replay" "$BASE_URL/matches/$sug_match/approve" "dec-sug-approve" "$root/approve.json" "$api")"
+  [[ "$code" == "200" ]] || { echo "approve replay HTTP $code" >&2; exit 1; }
+  cmp -s "$root/approve/body.json" "$root/approve-replay/body.json" || { echo "replay body differs" >&2; exit 1; }
+  local events outbox
+  events="$(psql_exec -tAc "SELECT count(*) FROM reconciliation_events WHERE match_id = '$sug_match'" | tr -d '[:space:]')"
+  [[ "$events" == "2" ]] || { echo "approve events $events" >&2; exit 1; }
+  outbox="$(psql_exec -tAc "SELECT count(*) FROM outbox WHERE aggregate_id = '$sug_match' AND event_type = 'MatchConfirmed'" | tr -d '[:space:]')"
+  [[ "$outbox" == "1" ]] || { echo "approve outbox $outbox" >&2; exit 1; }
+
+  code="$(post_json "$root/stale" "$BASE_URL/matches/$sug_match/approve" "dec-sug-stale" "$root/approve.json" "$api")"
+  [[ "$code" == "409" ]] || { echo "stale HTTP $code" >&2; cat "$root/stale/body.json" >&2; exit 1; }
+  grep -qi 'application/problem+json' "$root/stale/headers.txt" || { echo "stale was not problem+json" >&2; exit 1; }
+  python3 - "$root/stale/body.json" <<'PY'
+import json, pathlib, sys
+body = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if body.get("status") != 409 or "stale" not in body.get("detail", "").lower():
+    raise SystemExit(f"stale body {body}")
+PY
+  local still
+  still="$(psql_exec -tAc "SELECT count(*) FROM reconciliation_events WHERE match_id = '$sug_match'" | tr -d '[:space:]')"
+  [[ "$still" == "2" ]] || { echo "stale wrote an event" >&2; exit 1; }
+
+  code="$(curl -sS --max-time 20 -o "$root/prometheus-after.txt" -w '%{http_code}' "$BASE_URL/actuator/prometheus" 2>"$root/prometheus-after.stderr.txt")"
+  [[ "$code" == "200" ]] || { echo "prometheus after HTTP $code" >&2; exit 1; }
+  python3 - "$root/prometheus-before.txt" "$root/prometheus-after.txt" <<'PY'
+import pathlib, sys
+def value(text):
+    total = 0.0
+    for line in text.splitlines():
+        if line.startswith("#"):
+            continue
+        head, _, number = line.partition(" ")
+        if head == "optimistic_lock_conflicts_total" or head.startswith("optimistic_lock_conflicts_total{"):
+            total += float(number)
+    return total
+before = pathlib.Path(sys.argv[1]).read_text()
+after = pathlib.Path(sys.argv[2]).read_text()
+got = value(after) - value(before)
+if abs(got - 1) > 0.001:
+    raise SystemExit(f"optimistic_lock_conflicts_total delta {got}")
+PY
+
+  printf '%s' '{"cardOwnerId":"exception-owner","merchant":"Cafe Nero","amount":"50.00","currency":"AUD","txnDate":"2026-11-21","tax":"5.00"}' >"$root/ex-txn.json"
+  code="$(post_json "$root/ex-txn" "$BASE_URL/transactions" "dec-ex-txn" "$root/ex-txn.json" "$api")"
+  [[ "$code" == "201" ]] || { echo "exception transaction HTTP $code" >&2; exit 1; }
+  printf '%s' '{"kind":"RECEIPT","cardOwnerId":"exception-owner","merchant":"Cafe Nero","amount":"55.00","currency":"AUD","docDate":"2026-11-21","tax":"5.00"}' >"$root/ex-doc.json"
+  code="$(post_json "$root/ex-doc" "$BASE_URL/documents" "dec-ex-doc" "$root/ex-doc.json" "$api")"
+  [[ "$code" == "201" ]] || { echo "exception document HTTP $code" >&2; exit 1; }
+  local ex_txn
+  ex_txn="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$root/ex-txn/body.json")"
+  code="$(reconcile_empty "$root/ex" "$BASE_URL/reconcile/$ex_txn" "dec-ex")"
+  [[ "$code" == "200" ]] || { echo "exception reconcile HTTP $code" >&2; exit 1; }
+  local ex_match
+  ex_match="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["matchId"])' "$root/ex/body.json")"
+  code="$(get_url "$root/ex-get" "$BASE_URL/matches/$ex_match")"
+  [[ "$code" == "200" ]] || { echo "exception get HTTP $code" >&2; exit 1; }
+  python3 - "$root/ex-get/body.json" <<'PY'
+import json, pathlib, sys
+body = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if body["status"] != "EXCEPTION" or body["exceptionType"] != "AMOUNT_MISMATCH":
+    raise SystemExit(f"exception match {body}")
+PY
+  printf '%s' '{"version":0,"actor":"sam"}' >"$root/ex-no-reason.json"
+  code="$(post_json "$root/ex-no-reason" "$BASE_URL/matches/$ex_match/approve" "dec-ex-no-reason" "$root/ex-no-reason.json" "$api")"
+  [[ "$code" == "422" ]] || { echo "exception without reason HTTP $code" >&2; cat "$root/ex-no-reason/body.json" >&2; exit 1; }
+  python3 - "$root/ex-no-reason/body.json" <<'PY'
+import json, pathlib, sys
+body = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if body.get("status") != 422 or "non-empty reason" not in body.get("detail", ""):
+    raise SystemExit(f"422 body {body}")
+PY
+  local ex_events
+  ex_events="$(psql_exec -tAc "SELECT count(*) FROM reconciliation_events WHERE match_id = '$ex_match'" | tr -d '[:space:]')"
+  [[ "$ex_events" == "1" ]] || { echo "exception events after 422: $ex_events" >&2; exit 1; }
+  printf '%s' '{"version":0,"actor":"sam","reason":"override the amount"}' >"$root/ex-approve.json"
+  code="$(post_json "$root/ex-approve" "$BASE_URL/matches/$ex_match/approve" "dec-ex-approve" "$root/ex-approve.json" "$api")"
+  [[ "$code" == "200" ]] || { echo "exception approve HTTP $code" >&2; cat "$root/ex-approve/body.json" >&2; exit 1; }
+  python3 - "$root/ex-approve/body.json" <<'PY'
+import json, pathlib, sys
+body = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if body["status"] != "APPROVED" or body["version"] != 1:
+    raise SystemExit(f"exception approve {body}")
+PY
+
+  printf '%s' '{"cardOwnerId":"reject-owner","merchant":"Cafe","amount":"8.00","currency":"AUD","txnDate":"2026-11-21"}' >"$root/rej-txn.json"
+  code="$(post_json "$root/rej-txn" "$BASE_URL/transactions" "dec-rej-txn" "$root/rej-txn.json" "$api")"
+  [[ "$code" == "201" ]] || { echo "reject transaction HTTP $code" >&2; exit 1; }
+  printf '%s' '{"kind":"RECEIPT","cardOwnerId":"reject-owner","merchant":"Cafe","amount":"8.00","currency":"AUD","docDate":"2026-11-21"}' >"$root/rej-doc.json"
+  code="$(post_json "$root/rej-doc" "$BASE_URL/documents" "dec-rej-doc" "$root/rej-doc.json" "$api")"
+  [[ "$code" == "201" ]] || { echo "reject document HTTP $code" >&2; exit 1; }
+  local rej_txn rej_doc
+  rej_txn="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$root/rej-txn/body.json")"
+  rej_doc="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$root/rej-doc/body.json")"
+  code="$(reconcile_empty "$root/rej" "$BASE_URL/reconcile/$rej_txn" "dec-rej-recon")"
+  [[ "$code" == "200" ]] || { echo "reject reconcile HTTP $code" >&2; exit 1; }
+  local rej_match
+  rej_match="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["matchId"])' "$root/rej/body.json")"
+  printf '%s' '{"version":0,"actor":"sam","reason":"not this receipt"}' >"$root/reject.json"
+  code="$(post_json "$root/reject" "$BASE_URL/matches/$rej_match/reject" "dec-rej" "$root/reject.json" "$api")"
+  [[ "$code" == "200" ]] || { echo "reject HTTP $code" >&2; cat "$root/reject/body.json" >&2; exit 1; }
+  python3 - "$root/reject/body.json" <<'PY'
+import json, pathlib, sys
+body = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if body["status"] != "REJECTED" or body["version"] != 1:
+    raise SystemExit(f"reject body {body}")
+PY
+  local charge_status rej_outbox
+  charge_status="$(psql_exec -tAc "SELECT status FROM card_transactions WHERE id = '$rej_txn'" | tr -d '[:space:]')"
+  [[ "$charge_status" == "UNMATCHED" ]] || { echo "charge status $charge_status" >&2; exit 1; }
+  rej_outbox="$(psql_exec -tAc "SELECT count(*) FROM outbox WHERE aggregate_id = '$rej_match'" | tr -d '[:space:]')"
+  [[ "$rej_outbox" == "0" ]] || { echo "reject wrote an outbox row" >&2; exit 1; }
+  code="$(get_url "$root/reject-history" "$BASE_URL/matches/$rej_match/history")"
+  [[ "$code" == "200" ]] || { echo "reject history HTTP $code" >&2; exit 1; }
+  python3 - "$root/reject-history/body.json" <<'PY'
+import json, pathlib, sys
+events = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if len(events) != 2 or events[1]["eventType"] != "REJECTED" or events[1]["reason"] != "not this receipt":
+    raise SystemExit(f"reject history {events}")
+PY
+
+  code="$(reconcile_empty "$root/rej-again" "$BASE_URL/reconcile/$rej_txn" "dec-rej-again")"
+  [[ "$code" == "200" ]] || { echo "re-reconcile HTTP $code" >&2; cat "$root/rej-again/body.json" >&2; exit 1; }
+  python3 - "$root/rej-again/body.json" "$rej_match" <<'PY'
+import json, pathlib, sys
+body = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if body["matchId"] != sys.argv[2] or body["status"] != "SUGGESTED":
+    raise SystemExit(f"re-match did not reuse the row: {body}")
+PY
+  local match_rows
+  match_rows="$(psql_exec -tAc "SELECT count(*) FROM matches WHERE transaction_id = '$rej_txn'" | tr -d '[:space:]')"
+  [[ "$match_rows" == "1" ]] || { echo "re-match row count $match_rows" >&2; exit 1; }
+  code="$(get_url "$root/rematch-history" "$BASE_URL/matches/$rej_match/history")"
+  [[ "$code" == "200" ]] || { echo "re-match history HTTP $code" >&2; exit 1; }
+  python3 - "$root/rematch-history/body.json" "$rej_doc" <<'PY'
+import json, pathlib, sys
+events = json.loads(pathlib.Path(sys.argv[1]).read_text())
+types = [event["eventType"] for event in events]
+if types != ["SUGGESTED", "REJECTED", "SUGGESTED"]:
+    raise SystemExit(f"re-match history {types}")
+last = events[2]
+if last["before"]["status"] != "REJECTED" or last["after"]["documentId"] != sys.argv[2]:
+    raise SystemExit(f"re-match event {last}")
+PY
+  printf '%s' '{"version":2,"actor":"sam","reason":"free it again"}' >"$root/reject-again.json"
+  code="$(post_json "$root/reject-again" "$BASE_URL/matches/$rej_match/reject" "dec-rej-free" "$root/reject-again.json" "$api")"
+  [[ "$code" == "200" ]] || { echo "second reject HTTP $code" >&2; cat "$root/reject-again/body.json" >&2; exit 1; }
+
+  printf '%s' '{"cardOwnerId":"reject-owner","merchant":"Cafe","amount":"8.00","currency":"AUD","txnDate":"2026-11-21"}' >"$root/rej-second.json"
+  code="$(post_json "$root/rej-second-txn" "$BASE_URL/transactions" "dec-rej-second-txn" "$root/rej-second.json" "$api")"
+  [[ "$code" == "201" ]] || { echo "second transaction HTTP $code" >&2; exit 1; }
+  local second_txn
+  second_txn="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$root/rej-second-txn/body.json")"
+  code="$(reconcile_empty "$root/rej-second" "$BASE_URL/reconcile/$second_txn" "dec-rej-second")"
+  [[ "$code" == "200" ]] || { echo "second reconcile HTTP $code" >&2; cat "$root/rej-second/body.json" >&2; exit 1; }
+  local second_match
+  second_match="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["matchId"])' "$root/rej-second/body.json")"
+  code="$(get_url "$root/rej-second-get" "$BASE_URL/matches/$second_match")"
+  [[ "$code" == "200" ]] || { echo "second get HTTP $code" >&2; exit 1; }
+  python3 - "$root/rej-second-get/body.json" "$rej_doc" <<'PY'
+import json, pathlib, sys
+body = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if body["documentId"] != sys.argv[2]:
+    raise SystemExit(f"second charge did not take the freed receipt: {body}")
+if body["status"] != "SUGGESTED":
+    raise SystemExit(f"second status {body['status']}")
+PY
+
+  local i published
+  for i in $(seq 1 20); do
+    published="$(psql_exec -tAc "SELECT count(*) FROM outbox WHERE aggregate_id IN ('$sug_match', '$ex_match') AND event_type = 'MatchConfirmed' AND published_at IS NOT NULL" | tr -d '[:space:]')"
+    printf 'try %s published=%s\n' "$i" "$published" >>"$root/outbox-wait.log"
+    if [[ "$published" == "2" ]]; then
+      break
+    fi
+    sleep 1
+  done
+  [[ "$published" == "2" ]] || { echo "outbox did not publish both rows" >&2; exit 1; }
+  psql_exec -c "SELECT aggregate_id, event_type, published_at IS NOT NULL AS published FROM outbox WHERE aggregate_id IN ('$sug_match', '$ex_match')" >"$root/outbox-rows.txt"
+  echo "decisions passed"
+}
+
 
 # Sum of idempotent_replays_total samples in a Prometheus text scrape.
 # Exits 1 when the metric line is absent.
@@ -1000,6 +1248,7 @@ drive() {
     audit) drive_audit ;;
     ingest) drive_ingest ;;
     reconcile) drive_reconcile ;;
+    decisions) drive_decisions ;;
     grafana) drive_grafana ;;
     *)
       echo "Unknown feature '$feature'." >&2

@@ -73,6 +73,8 @@ outbox(id bigserial pk, aggregate_id uuid, event_type text, payload jsonb,
                └────────► EXCEPTION ── approve with override reason / reject
 
            MATCHED with score ≥ auto-approve threshold ─► APPROVED automatically
+
+           REJECTED ── reconcile again ──► same match row, then MATCHED / SUGGESTED / EXCEPTION
 ```
 - Auto-approve: a `MATCHED` result whose score is at or above `recon.auto-approve.threshold` (config, default 0.95, separate from the 0.85 MATCHED cut-off) is approved in the same transaction, with actor `system:auto-approve`.
 - Auditable: the auto-approve event stores the score, the threshold in force, the rules fired and the rule-set version. EXCEPTION and SUGGESTED results are never auto-approved. Setting the threshold above 1.0 turns auto-approve off.
@@ -80,8 +82,11 @@ outbox(id bigserial pk, aggregate_id uuid, event_type text, payload jsonb,
 - Every transition writes one `reconciliation_events` row in the same database transaction.
 - An EXCEPTION holds its receipt until approved or rejected, when the merchant score clears the minimum in section 6.
 - Matching skips a receipt already held by another live match. If no candidate remains, the result is an EXCEPTION.
+- Reconciling a charge whose match is `REJECTED` locks that row and reuses it. The row moves from `REJECTED` through the normal result (`MATCHED`, `SUGGESTED`, or `EXCEPTION`, then auto-approve when the score qualifies). `document_id` and `score` become the new decision, and `@Version` increments. `transaction_id` stays unique, so a second match row is not inserted. One `reconciliation_events` row records the move off `REJECTED`. Auto-approve, when it runs, is still its own following event and its own outbox row.
+- Any other existing status (`MATCHED`, `SUGGESTED`, `EXCEPTION`, `APPROVED`) still returns 409.
+- A re-match does not yet skip a receipt this charge already rejected, so it may select that receipt again.
 
-**Decided (Hok, 2026-11-21):** auto-approve above a score threshold, kept auditable as above. An EXCEPTION holds its receipt. Matching skips a receipt held by another live match.
+**Decided (Hok, 2026-11-21):** auto-approve above a score threshold, kept auditable as above. An EXCEPTION holds its receipt. Matching skips a receipt held by another live match. A rejected charge reuses its match row. Skipping a receipt the charge already rejected is still on hold.
 
 ## 6. Matching rules (deterministic, ordered)
 | Rule id | Check | Effect |

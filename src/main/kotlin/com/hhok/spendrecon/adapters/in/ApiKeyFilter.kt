@@ -26,7 +26,7 @@ class ApiKeyFilter(
             return true
         }
         val path = pathOf(request)
-        if (path in PROTECTED || path == "/reconcile" || path.startsWith("/reconcile/")) {
+        if (path in PROTECTED || path == "/reconcile" || path.startsWith("/reconcile/") || isDecision(path)) {
             return false
         }
         return true
@@ -51,6 +51,12 @@ class ApiKeyFilter(
     }
 
     private fun pathOf(request: HttpServletRequest): String = request.servletPath.ifEmpty { request.requestURI }
+
+    private fun isDecision(path: String): Boolean {
+        val normalized = path.removeSuffix("/")
+        return normalized.startsWith("/matches/") &&
+            (normalized.endsWith("/approve") || normalized.endsWith("/reject"))
+    }
 
     companion object {
         private val PROTECTED = setOf("/transactions", "/documents")
