@@ -9,6 +9,7 @@ import com.hhok.spendrecon.domain.Currency
 import com.hhok.spendrecon.domain.DocumentKind
 import com.hhok.spendrecon.domain.InvalidMoneyException
 import com.hhok.spendrecon.domain.Money
+import com.hhok.spendrecon.domain.trimDocumentNumber
 import org.springframework.stereotype.Component
 import java.time.LocalDate
 import java.time.format.DateTimeParseException
@@ -45,6 +46,7 @@ class IngestJsonParser(
             amount = requiredMoney(node, "amount", currency),
             tax = optionalMoney(node, currency),
             docDate = requiredDate(node, "docDate"),
+            documentNumber = optionalDocumentNumber(node),
         )
     }
 
@@ -155,6 +157,13 @@ class IngestJsonParser(
         return textual(node.get(field), field)
     }
 
+    /**
+     * Trim Unicode whitespace, including tab and NBSP. A blank or whitespace-only
+     * value is absent, so it is not part of the exact duplicate key.
+     */
+    private fun optionalDocumentNumber(node: ObjectNode): String? =
+        trimDocumentNumber(optionalString(node, "documentNumber"))
+
     private fun optionalString(
         node: ObjectNode,
         field: String,
@@ -179,6 +188,6 @@ class IngestJsonParser(
         private val TRANSACTION_FIELDS =
             setOf("cardOwnerId", "merchant", "amount", "currency", "txnDate", "tax")
         private val DOCUMENT_FIELDS =
-            setOf("kind", "cardOwnerId", "merchant", "amount", "currency", "docDate", "tax")
+            setOf("kind", "cardOwnerId", "merchant", "amount", "currency", "docDate", "tax", "documentNumber")
     }
 }

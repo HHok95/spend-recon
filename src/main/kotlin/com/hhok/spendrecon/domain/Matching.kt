@@ -14,6 +14,7 @@ enum class RuleId {
     R4_DATE,
     R5_MERCHANT,
     R6_TAX,
+    R7_DUPLICATE,
 }
 
 enum class MatchStatus {
@@ -24,11 +25,15 @@ enum class MatchStatus {
     REJECTED,
 }
 
-/** R7's DUPLICATE_DOCUMENT stays out until the duplicate check is decided. */
+/**
+ * POSSIBLE_DUPLICATE is a near-match. The status is EXCEPTION, so auto-approve
+ * cannot select it. An exact receipt number is rejected at ingest and is not an exception type.
+ */
 enum class ExceptionType {
     CURRENCY_MISMATCH,
     AMOUNT_MISMATCH,
     NO_CANDIDATE,
+    POSSIBLE_DUPLICATE,
 }
 
 /**
@@ -196,6 +201,9 @@ fun shouldAutoApprove(
  * check, and clear the merchant bar, become an EXCEPTION with no receipt, so an
  * arbitrary receipt is not blocked. Passing receipts are scored.
  * A tie is SUGGESTED and the lowest document id is the one the row holds.
+ * R7 then looks for a sibling with the same normalized merchant, amount, currency,
+ * and date. That near-match is EXCEPTION POSSIBLE_DUPLICATE and still holds the
+ * chosen receipt. A different date is left on the normal path.
  */
 fun matchReceipts(
     charge: ChargeView,
@@ -232,12 +240,15 @@ fun matchReceipts(
         } else {
             MatchStatus.SUGGESTED
         }
-    return MatchDecision(
-        status = status,
-        candidate = winner.second,
-        exceptionType = null,
-        rulesFired = ALL_RULES,
-        tiedDocumentIds = if (tied.size > 1) tied.map { it.first.documentId } else emptyList(),
+    return flagNearMatch(
+        MatchDecision(
+            status = status,
+            candidate = winner.second,
+            exceptionType = null,
+            rulesFired = SCORING_RULES,
+            tiedDocumentIds = if (tied.size > 1) tied.map { it.first.documentId } else emptyList(),
+        ),
+        receipts,
     )
 }
 
@@ -285,7 +296,38 @@ private fun amountException(
     return exception(
         ExceptionType.AMOUNT_MISMATCH,
         candidate = scoreOf(charge, eligible.single()),
-        rulesFired = ALL_RULES,
+        rulesFired = SCORING_RULES,
+    )
+}
+
+/**
+ * R7. A sibling receipt with the same merchant, amount, currency, and date is a
+ * near-match (a similar document). Equality of those fields is the whole check.
+ * The row stays on the receipt the scorer chose, with status EXCEPTION, so
+ * auto-approve cannot take it. A sibling already held by a live match still counts.
+ */
+private fun flagNearMatch(
+    decision: MatchDecision,
+    receipts: List<ReceiptView>,
+): MatchDecision {
+    val chosen = decision.candidate ?: return decision
+    val receipt = receipts.firstOrNull { it.documentId == chosen.documentId } ?: return decision
+    val near =
+        receipts.any { other ->
+            other.documentId != receipt.documentId &&
+                other.merchantNorm == receipt.merchantNorm &&
+                other.amountMinor == receipt.amountMinor &&
+                other.currency == receipt.currency &&
+                other.docDate == receipt.docDate
+        }
+    if (!near) {
+        return decision
+    }
+    return MatchDecision(
+        status = MatchStatus.EXCEPTION,
+        candidate = chosen,
+        exceptionType = ExceptionType.POSSIBLE_DUPLICATE,
+        rulesFired = decision.rulesFired + RuleId.R7_DUPLICATE,
     )
 }
 
@@ -314,7 +356,15 @@ private fun scoreOf(
             ),
     )
 
-private val ALL_RULES = RuleId.entries
+private val SCORING_RULES =
+    listOf(
+        RuleId.R1_CURRENCY,
+        RuleId.R2_OWNER,
+        RuleId.R3_AMOUNT,
+        RuleId.R4_DATE,
+        RuleId.R5_MERCHANT,
+        RuleId.R6_TAX,
+    )
 
 private val MERCHANT_WEIGHT = BigDecimal("0.7")
 
