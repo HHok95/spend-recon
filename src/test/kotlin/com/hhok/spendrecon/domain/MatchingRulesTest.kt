@@ -152,7 +152,8 @@ class MatchingRulesTest {
 
     @Test
     fun `a tie is suggested and both receipts are listed`() {
-        val first = receipt(id = UUID.fromString("00000000-0000-0000-0000-000000000002"))
+        // One day apart, so the scores tie and the receipts are not a near-match.
+        val first = receipt(id = UUID.fromString("00000000-0000-0000-0000-000000000002"), date = DAY.plusDays(1))
         val second = receipt(id = UUID.fromString("00000000-0000-0000-0000-000000000001"))
         val decision = matchReceipts(charge(), listOf(first, second), emptySet())
 
@@ -200,6 +201,43 @@ class MatchingRulesTest {
         assertThat(shouldAutoApprove(MatchStatus.SUGGESTED, BigDecimal("0.700"), BigDecimal("0.000"))).isFalse()
         assertThat(shouldAutoApprove(MatchStatus.EXCEPTION, matched, BigDecimal("0.000"))).isFalse()
         assertThat(shouldAutoApprove(MatchStatus.MATCHED, null, BigDecimal("0.000"))).isFalse()
+    }
+
+    @Test
+    fun `R7_DUPLICATE flags the same merchant amount and date and leaves a different date alone`() {
+        val first = receipt()
+        val second = receipt()
+        val near = matchReceipts(charge(), listOf(first, second), emptySet())
+        assertThat(near.status).isEqualTo(MatchStatus.EXCEPTION)
+        assertThat(near.exceptionType).isEqualTo(ExceptionType.POSSIBLE_DUPLICATE)
+        assertThat(near.candidate?.documentId).isIn(first.documentId, second.documentId)
+        assertThat(near.rulesFired).contains(RuleId.R7_DUPLICATE)
+        assertThat(shouldAutoApprove(near.status, near.candidate?.score, BigDecimal.ZERO)).isFalse()
+
+        val held = matchReceipts(charge(), listOf(first, second), setOf(first.documentId))
+        assertThat(held.status).isEqualTo(MatchStatus.EXCEPTION)
+        assertThat(held.exceptionType).isEqualTo(ExceptionType.POSSIBLE_DUPLICATE)
+        assertThat(held.candidate?.documentId).isEqualTo(second.documentId)
+        assertThat(shouldAutoApprove(held.status, held.candidate?.score, BigDecimal.ZERO)).isFalse()
+
+        val otherCurrency = receipt(currency = "USD")
+        val sameMoney = matchReceipts(charge(), listOf(first, otherCurrency), emptySet())
+        assertThat(sameMoney.exceptionType).isNull()
+        assertThat(sameMoney.candidate?.documentId).isEqualTo(first.documentId)
+        assertThat(sameMoney.rulesFired).doesNotContain(RuleId.R7_DUPLICATE)
+
+        val nextDay = receipt(date = DAY.plusDays(1))
+        val insideWindow = matchReceipts(charge(date = DAY.plusDays(1)), listOf(first, nextDay), emptySet())
+        assertThat(insideWindow.exceptionType).isNull()
+        assertThat(insideWindow.rulesFired).doesNotContain(RuleId.R7_DUPLICATE)
+
+        val later = receipt(date = DAY.plusDays(10))
+        val repeat = matchReceipts(charge(date = DAY.plusDays(10)), listOf(first, later), emptySet())
+        assertThat(repeat.status).isEqualTo(MatchStatus.MATCHED)
+        assertThat(repeat.exceptionType).isNull()
+        assertThat(repeat.candidate?.documentId).isEqualTo(later.documentId)
+        assertThat(repeat.rulesFired).doesNotContain(RuleId.R7_DUPLICATE)
+        assertThat(shouldAutoApprove(repeat.status, repeat.candidate?.score, BigDecimal("0.95"))).isTrue()
     }
 
     @Test

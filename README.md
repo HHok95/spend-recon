@@ -7,7 +7,7 @@ This service records the charge and the receipt, matches them with fixed rules, 
 One charge moves like this:
 
 1. `POST /transactions` records the charge. Its status is `UNMATCHED`.
-2. `POST /documents` records the receipt (`kind` `RECEIPT`) or a bill.
+2. `POST /documents` records the receipt (`kind` `RECEIPT`) or a bill. `documentNumber` is optional. The same merchant and the same receipt or invoice number return 409.
 3. `POST /reconcile/{txnId}` matches the charge. The result is `MATCHED`, `SUGGESTED`, or `EXCEPTION`.
 4. A `MATCHED` score of at least 0.95 is stored as `APPROVED` in that same request. Any other result waits. A person calls `POST /matches/{id}/approve` or `POST /matches/{id}/reject`.
 5. Approve, by the service or by a person, inserts one `MatchConfirmed` row into `outbox` in the same database transaction. A poller publishes it.
@@ -137,14 +137,14 @@ Compose runs all four boxes: the process, Postgres, Prometheus, and Grafana. `ma
 
 Score is `0.7 * merchant + 0.3 * tax`, rounded half up to three decimal places. Merchant is Jaro-Winkler on the normalized name. Tax is 1 when both sides have a tax and the minor units are equal, and 0 otherwise. Ingest stores the charge as `UNMATCHED`. That is the charge's status. A match row does not exist yet. The other names in the diagram are match statuses.
 
-A single top score, with no tie, at 0.850 or above is `MATCHED`. Other receipts can exist. A lower top score is `SUGGESTED`. Two or more receipts tied for that top score are `SUGGESTED`, and the row holds the one with the lowest document id.
+A single top score, with no tie, at 0.850 or above is `MATCHED`. Other receipts can exist. A lower top score is `SUGGESTED`. Two or more receipts tied for that top score are `SUGGESTED`, and the row holds the one with the lowest document id. Identical same-day receipts are not that tie: the same merchant, amount, currency, and date go to `EXCEPTION`, not `SUGGESTED`.
 
 ```mermaid
 stateDiagram-v2
   [*] --> UNMATCHED: charge ingested
   UNMATCHED --> MATCHED: one top score, no tie, at 0.850 or above
   UNMATCHED --> SUGGESTED: top score under 0.850, or a tie
-  UNMATCHED --> EXCEPTION: nothing to hold, or a currency or amount miss
+  UNMATCHED --> EXCEPTION: nothing to hold, a currency or amount miss, or a possible duplicate
   MATCHED --> APPROVED: auto-approve at 0.95, or a person
   SUGGESTED --> APPROVED: a person approves
   EXCEPTION --> APPROVED: a person approves with a reason
@@ -168,7 +168,7 @@ Each one is a decision already in the code and in [docs/ARCHITECTURE.md](docs/AR
 
 **Money is minor units plus a currency.** AUD 12.34 is stored as `1234` and `AUD`. JPY 500 is `500` and `JPY`. The scale comes from `java.util.Currency`. The API field is a decimal string. A JSON number is a 400, because a binary float cannot represent 0.10 exactly. Adding two amounts of different currencies throws. Postgres columns are `amount_minor BIGINT` and `currency CHAR(3)`. Section 3.
 
-**Idempotency keys.** Every write sends `Idempotency-Key`. The key is unique with the endpoint, so the same token on `POST /transactions` and `POST /documents` is two keys. The service inserts the key with `ON CONFLICT DO NOTHING` in the same transaction as the business write. The same key and the same raw body return the stored response and increment `idempotent_replays_total`. The same key and a different body return 422. A key whose response is not stored yet returns 409 with `Retry-After`. A 400 does not consume the key. Section 7.
+**Idempotency keys.** Every write sends `Idempotency-Key`. The key is unique with the endpoint, so the same token on `POST /transactions` and `POST /documents` is two keys. The service inserts the key with `ON CONFLICT DO NOTHING` in the same transaction as the business write. The same key and the same raw body return the stored response and increment `idempotent_replays_total`. The same key and a different body return 422. A key whose response is not stored yet returns 409 with `Retry-After`. A 400 does not consume the key. Section 7. `documentNumber` on `POST /documents` is optional. The same merchant and the same receipt or invoice number return 409 problem+json. That conflict is the duplicate number, separate from the in-flight idempotency 409.
 
 **`matches.score` is nullable, with checks.** V1 created `score NOT NULL`. V2 drops that and adds two checks: `score` is null exactly when `document_id` is null, and a score is null or between 0 and 1. A match with no receipt has no score to invent. A match that holds a receipt always has one.
 
@@ -204,7 +204,7 @@ Micrometer publishes the architecture's names like this:
 | --- | --- |
 | `recon_matches_total{result}` | The decision before auto-approve: `MATCHED`, `SUGGESTED`, or `EXCEPTION` |
 | `recon_match_latency_seconds` | Time to decide a match and write it |
-| `recon_exceptions_total{type}` | `CURRENCY_MISMATCH`, `AMOUNT_MISMATCH`, or `NO_CANDIDATE` |
+| `recon_exceptions_total{type}` | `CURRENCY_MISMATCH`, `AMOUNT_MISMATCH`, `NO_CANDIDATE`, or `POSSIBLE_DUPLICATE` |
 | `recon_auto_approvals_total` | Rows stored as `APPROVED` because the score met the threshold |
 | `idempotent_replays_total` | Stored responses returned for a repeated key. The counter exists as soon as ingest starts |
 | `optimistic_lock_conflicts_total` | Approve or reject calls whose version was stale |
@@ -354,7 +354,7 @@ Amounts are decimal strings. `documentId`, `score`, `decidedBy`, and `decidedAt`
 
 **Deploy hardening.** Compose and `k8s/` use the local password `spendrecon`, the API key `local-dev-key`, and Grafana `admin` / `admin`. Nothing terminates TLS. Compose publishes Postgres on the host. The kind volume is a hostPath with `Retain`: a deleted claim does not bind again, and the files disappear with the kind node. The app image is loaded into kind by `make kind-up`. There is no registry and one replica. Those are local defaults, not a deploy.
 
-**R7, the duplicate check, is still open.** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) section 4 records it. A content hash was proposed and not accepted. `DUPLICATE_DOCUMENT` is not a result the engine can return. Two receipts with the same owner, merchant, amount, currency, and date are two documents.
+**R7 is decided (Hok, 2026-11-22), option C.** An exact key is rejected: the same Idempotency-Key, which is unchanged, or the same receipt or invoice number from the same merchant. A near-match, the same merchant, amount, and date, or a similar document, is `POSSIBLE_DUPLICATE` and goes to `EXCEPTION` for a person to review. It is not auto-approved. A real repeat purchase, the same merchant and amount on a different date, or a different receipt number with nothing else matching, is accepted. Section 4 of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 **A re-match can pick a receipt this charge already rejected.** The hold skips receipts locked by another live match. It does not skip a receipt this charge rejected earlier.
 

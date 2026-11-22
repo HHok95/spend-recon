@@ -2,6 +2,7 @@ package com.hhok.spendrecon.adapters.`in`
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.hhok.spendrecon.ReconProperties
+import com.hhok.spendrecon.application.DuplicateDocumentException
 import com.hhok.spendrecon.application.IdempotencyInFlightException
 import com.hhok.spendrecon.application.IdempotencyMismatchException
 import com.hhok.spendrecon.application.IllegalTransitionException
@@ -50,6 +51,16 @@ class ApiExceptionHandler(
     @ExceptionHandler(TransactionNotFoundException::class, MatchNotFoundException::class)
     fun notFound(exception: RuntimeException): ResponseEntity<String> =
         problemResponse(json, HttpStatus.NOT_FOUND, exception.message ?: "Not found.")
+
+    @ExceptionHandler(DuplicateDocumentException::class)
+    fun duplicateDocument(exception: DuplicateDocumentException): ResponseEntity<String> =
+        problemResponse(
+            json,
+            HttpStatus.CONFLICT,
+            exception.message ?: "A document with this receipt or invoice number already exists for this merchant.",
+            type = "urn:spend-recon:duplicate-document",
+            title = "Duplicate document",
+        )
 
     @ExceptionHandler(TransactionAlreadyMatchedException::class)
     fun alreadyMatched(): ResponseEntity<String> =
