@@ -286,7 +286,7 @@ Not measured: kind, more than one app process, overlapping cardholders (so row l
 
 ## Deploy
 
-The image builds with the Gradle wrapper and runs as a non-root user on Eclipse Temurin 21 JRE Alpine. The JVM flags target a 512 MB machine: the heap is 70% of the cgroup limit, the collector is Serial GC, thread stacks are 512k, the JIT stops at C1, and the process exits on out-of-memory so the platform can restart it.
+The image builds with the Gradle wrapper and runs as a non-root user on Eclipse Temurin 21 JRE Alpine. The JVM flags target a 512 MB machine: the heap is 60% of the cgroup limit, the collector is Serial GC, thread stacks are 512k, the JIT stops at C1, and the process exits on out-of-memory so the platform can restart it.
 
 `fly.toml` is one `shared-cpu-1x` machine with 512 MB for the app `spend-recon-api`. Idle machines stop, and the next request starts one. `min_machines_running` is 0. HTTPS is forced. The check is `GET /actuator/health/readiness`.
 
@@ -298,7 +298,13 @@ flyctl deploy --ha=false
 
 `.github/workflows/deploy.yml` runs that command as `flyctl deploy --remote-only --ha=false` after the CI workflow succeeds on `main`, and on a manual run. It uses `superfly/flyctl-actions/setup-flyctl` at the 1.5 commit and `FLY_API_TOKEN` from the repository secrets. If that secret is absent, the job writes a notice and does not deploy.
 
-The `prod` profile, activated by `fly.toml`, reads the database only from `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, and `SPRING_DATASOURCE_PASSWORD`. `RECON_API_KEY` is required the same way. If any of the four is missing, the process exits during startup and does not use the local database password or `local-dev-key`. The pool size is 3. The JDBC driver sets `sslmode=require`. Set those four as Fly secrets. The profile exposes `/actuator/health` (including readiness and liveness) and does not expose `/actuator/prometheus` or the other actuator routes.
+The `prod` profile, activated by `fly.toml`, reads the database only from `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, and `SPRING_DATASOURCE_PASSWORD`. `RECON_API_KEY` is required the same way. If any of the four is missing, the process exits during startup and does not use the local database password or `local-dev-key`. The pool size is 3. The JDBC driver sets `sslmode=require`. The profile exposes `/actuator/health` (including readiness and liveness) and does not expose `/actuator/prometheus` or the other actuator routes.
+
+Set the four secrets on the app:
+
+```bash
+fly secrets set SPRING_DATASOURCE_URL='jdbc:postgresql://<host>/<db>?sslmode=require' SPRING_DATASOURCE_USERNAME=<user> SPRING_DATASOURCE_PASSWORD=<password> RECON_API_KEY=$(openssl rand -hex 32) -a spend-recon-api
+```
 
 Compose and kind do not set `prod`. Their database password, API key, and Grafana login stay the local defaults.
 

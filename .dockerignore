@@ -13,3 +13,6 @@ k8s
 monitoring
 scripts
 src/test
+web
+node_modules
+.next

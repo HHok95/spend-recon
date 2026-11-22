@@ -13,12 +13,12 @@ WORKDIR /app
 COPY --from=build --chown=app:app /workspace/build/libs/app.jar /app/app.jar
 USER app
 EXPOSE 8080
-# Sized for a 512 MB machine. MaxRAMPercentage follows the cgroup, so the same
-# image stays inside a larger limit. Serial GC avoids G1's extra structures on
-# a small heap. 512k stacks and C1-only JIT keep the footprint down. Exit on
+# Sized for a 512 MB machine. 60% of the cgroup leaves room for metaspace,
+# code cache, and native memory. Serial GC avoids G1's extra structures on a
+# small heap. 512k stacks and C1-only JIT keep the footprint down. Exit on
 # OOM so the platform restarts the process instead of leaving it wedged.
 ENTRYPOINT ["java", \
-  "-XX:MaxRAMPercentage=70", \
+  "-XX:MaxRAMPercentage=60", \
   "-XX:+UseSerialGC", \
   "-Xss512k", \
   "-XX:TieredStopAtLevel=1", \

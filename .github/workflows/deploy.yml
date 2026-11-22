@@ -20,37 +20,70 @@ jobs:
     runs-on: ubuntu-latest
     if: >-
       github.repository == 'HHok95/spend-recon' &&
-      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+      (
+        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+        (
+          github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.event == 'push' &&
+          github.event.workflow_run.head_branch == 'main' &&
+          github.event.workflow_run.head_repository.full_name == github.repository
+        )
+      )
     timeout-minutes: 20
     steps:
       - name: Confirm CI succeeded for this commit
         id: ci
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          sha="${{ github.sha }}"
-          conclusion="$(gh run list --workflow CI --branch "${{ github.ref_name }}" --json headSha,conclusion --jq "map(select(.headSha == \"$sha\")) | .[0].conclusion // \"none\"")"
+          conclusion="$(gh run list --workflow CI --branch "$REF_NAME" --json headSha,conclusion | jq -r --arg sha "$SHA" 'map(select(.headSha == $sha)) | .[0].conclusion // "none"')"
           if [ "$conclusion" = "success" ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice title=Deploy skipped::CI has not succeeded for ${sha} (conclusion: ${conclusion})."
+            echo "::notice title=Deploy skipped::CI has not succeeded for ${SHA} (conclusion: ${conclusion})."
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Check out the commit CI ran
+      - name: Skip unless this commit is still the tip of main
+        id: tip
         if: steps.ci.outputs.ok == 'true'
-        uses: actions/checkout@v4
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "workflow_run" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tip="$(gh api "repos/${GH_REPO}/commits/main" --jq .sha)"
+          if [ "$HEAD_SHA" = "$tip" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Deploy skipped::${HEAD_SHA} is no longer the tip of main."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out the commit CI ran
+        if: steps.ci.outputs.ok == 'true' && steps.tip.outputs.current == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Skip when FLY_API_TOKEN is absent
         id: fly_token
-        if: steps.ci.outputs.ok == 'true'
+        if: steps.ci.outputs.ok == 'true' && steps.tip.outputs.current == 'true'
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
@@ -63,11 +96,11 @@ jobs:
           fi
 
       - name: Install flyctl
-        if: steps.ci.outputs.ok == 'true' && steps.fly_token.outputs.present == 'true'
+        if: steps.ci.outputs.ok == 'true' && steps.tip.outputs.current == 'true' && steps.fly_token.outputs.present == 'true'
         uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
 
       - name: Deploy
-        if: steps.ci.outputs.ok == 'true' && steps.fly_token.outputs.present == 'true'
+        if: steps.ci.outputs.ok == 'true' && steps.tip.outputs.current == 'true' && steps.fly_token.outputs.present == 'true'
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: flyctl deploy --remote-only --ha=false
