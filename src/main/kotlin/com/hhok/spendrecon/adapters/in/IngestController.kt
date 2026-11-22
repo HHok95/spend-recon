@@ -151,7 +151,7 @@ data class DocumentBodyDoc(
     val tax: String? = null,
     @field:Schema(
         requiredMode = Schema.RequiredMode.NOT_REQUIRED,
-        description = "Receipt or invoice number. The same number from the same merchant is rejected. Blank is treated as absent.",
+        description = "Receipt or invoice number. Surrounding whitespace is removed. A blank value is absent. The same number from the same merchant is rejected.",
         example = "INV-100",
     )
     val documentNumber: String? = null,

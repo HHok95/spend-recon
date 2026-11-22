@@ -35,6 +35,8 @@ class DocumentEntity(
     var docDate: LocalDate = LocalDate.EPOCH,
     @Column(name = "document_number")
     var documentNumber: String? = null,
+    @Column(name = "document_number_norm")
+    var documentNumberNorm: String? = null,
     @Column(name = "created_at", nullable = false)
     var createdAt: OffsetDateTime = OffsetDateTime.now(ZoneOffset.UTC),
 )

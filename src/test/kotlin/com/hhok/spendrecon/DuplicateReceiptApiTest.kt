@@ -167,6 +167,32 @@ class DuplicateReceiptApiTest : PostgresIntegrationTest() {
     }
 
     @Test
+    fun `a trailing tab or a leading nbsp is the same number and spaces are no number`() {
+        val owner = uniqueOwner()
+        val merchant = uniqueMerchant()
+        val created = post("/documents", uniqueKey(), documentBody(owner = owner, merchant = merchant, number = "INV-100"))
+        assertThat(created.status).isEqualTo(201)
+        val createdId = idOf(created.body)
+        assertThat(storedNumber(createdId)).isEqualTo("INV-100")
+        assertThat(storedNumberNorm(createdId)).isEqualTo("inv-100")
+
+        val tab = post("/documents", uniqueKey(), documentBody(owner = owner, merchant = merchant, number = "INV-100\t"))
+        assertThat(tab.status).isEqualTo(409)
+        assertThat(json.readTree(tab.body)["type"].asText()).isEqualTo("urn:spend-recon:duplicate-document")
+
+        val nbsp = post("/documents", uniqueKey(), documentBody(owner = owner, merchant = merchant, number = "\u00A0INV-100"))
+        assertThat(nbsp.status).isEqualTo(409)
+        assertThat(json.readTree(nbsp.body)["title"].asText()).isEqualTo("Duplicate document")
+
+        val blank = post("/documents", uniqueKey(), documentBody(owner = owner, merchant = merchant, number = "   "))
+        assertThat(blank.status).isEqualTo(201)
+        val blankId = idOf(blank.body)
+        assertThat(storedNumber(blankId)).isNull()
+        assertThat(storedNumberNorm(blankId)).isNull()
+        assertThat(countNumber(merchantNorm = merchant.lowercase(), numberNorm = "inv-100")).isEqualTo(1)
+    }
+
+    @Test
     fun `replaying an idempotency key still returns the stored response`() {
         val owner = uniqueOwner()
         val transactionKey = uniqueKey()
@@ -329,7 +355,7 @@ class DuplicateReceiptApiTest : PostgresIntegrationTest() {
         date: String = "2026-11-21",
         number: String? = null,
     ): String {
-        val numberJson = if (number == null) "" else ""","documentNumber":"$number""""
+        val numberJson = if (number == null) "" else ""","documentNumber":${json.writeValueAsString(number)}"""
         return """{"kind":"RECEIPT","cardOwnerId":"$owner","merchant":"$merchant","amount":"$amount","currency":"AUD","docDate":"$date","tax":"1.10"$numberJson}"""
     }
 
@@ -381,12 +407,19 @@ class DuplicateReceiptApiTest : PostgresIntegrationTest() {
             numberNorm,
         )!!
 
-    private fun storedNumber(id: String): String? =
-        jdbc.queryForObject(
-            "SELECT document_number FROM documents WHERE id = ?",
-            String::class.java,
+    private fun storedNumber(id: String): String? = storedColumn(id, "document_number")
+
+    private fun storedNumberNorm(id: String): String? = storedColumn(id, "document_number_norm")
+
+    private fun storedColumn(
+        id: String,
+        column: String,
+    ): String? =
+        jdbc.query(
+            "SELECT $column FROM documents WHERE id = ?",
+            { rs, _ -> rs.getString(column) },
             UUID.fromString(id),
-        )
+        ).single()
 
     private fun outboxCount(matchId: String): Long =
         jdbc.queryForObject(

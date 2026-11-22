@@ -38,6 +38,7 @@ class JpaIngestStore(
     override fun insertDocument(
         command: IngestDocumentCommand,
         merchantNorm: String,
+        documentNumberNorm: String?,
     ): UUID {
         val id = UUID.randomUUID()
         try {
@@ -53,6 +54,7 @@ class JpaIngestStore(
                     taxMinor = command.tax?.minor,
                     docDate = command.docDate,
                     documentNumber = command.documentNumber,
+                    documentNumberNorm = documentNumberNorm,
                 ),
             )
         } catch (exception: RuntimeException) {

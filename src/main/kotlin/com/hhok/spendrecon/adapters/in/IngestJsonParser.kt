@@ -9,6 +9,7 @@ import com.hhok.spendrecon.domain.Currency
 import com.hhok.spendrecon.domain.DocumentKind
 import com.hhok.spendrecon.domain.InvalidMoneyException
 import com.hhok.spendrecon.domain.Money
+import com.hhok.spendrecon.domain.trimDocumentNumber
 import org.springframework.stereotype.Component
 import java.time.LocalDate
 import java.time.format.DateTimeParseException
@@ -156,14 +157,12 @@ class IngestJsonParser(
         return textual(node.get(field), field)
     }
 
-    /** Blank is absent. A missing number is not part of the exact duplicate key. */
-    private fun optionalDocumentNumber(node: ObjectNode): String? {
-        val number = optionalString(node, "documentNumber") ?: return null
-        if (number.isEmpty()) {
-            return null
-        }
-        return number
-    }
+    /**
+     * Trim Unicode whitespace, including tab and NBSP. A blank or whitespace-only
+     * value is absent, so it is not part of the exact duplicate key.
+     */
+    private fun optionalDocumentNumber(node: ObjectNode): String? =
+        trimDocumentNumber(optionalString(node, "documentNumber"))
 
     private fun optionalString(
         node: ObjectNode,

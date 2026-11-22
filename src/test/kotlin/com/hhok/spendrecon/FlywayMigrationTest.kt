@@ -130,26 +130,25 @@ class FlywayMigrationTest : PostgresIntegrationTest() {
     }
 
     @Test
-    fun `a receipt number is unique per merchant after trim and case fold`() {
+    fun `a normalised receipt number is unique per merchant`() {
         val indexDef =
             jdbc.queryForObject(
                 "SELECT indexdef FROM pg_indexes WHERE indexname = 'documents_merchant_document_number'",
                 String::class.java,
             )
-        assertThat(indexDef).contains("UNIQUE").contains("merchant_norm").contains("lower").contains("btrim")
+        assertThat(indexDef).contains("UNIQUE").contains("merchant_norm").contains("document_number_norm")
         assertThat(indexDef).contains("IS NOT NULL")
+        assertThat(indexDef).doesNotContain("btrim")
 
-        insertDocument(UUID.randomUUID(), number = "INV-100")
+        insertDocument(UUID.randomUUID(), number = "INV-100", numberNorm = "inv-100")
         assertThatThrownBy {
-            insertDocument(UUID.randomUUID(), number = " inv-100 ")
+            insertDocument(UUID.randomUUID(), number = " inv-100 ", numberNorm = "inv-100")
         }.hasMessageContaining("documents_merchant_document_number")
 
-        insertDocument(UUID.randomUUID(), number = null)
-        insertDocument(UUID.randomUUID(), number = null)
-        insertDocument(UUID.randomUUID(), number = "")
-        insertDocument(UUID.randomUUID(), number = "   ")
-        insertDocument(UUID.randomUUID(), merchantNorm = "other", number = "INV-100")
-        insertDocument(UUID.randomUUID(), number = "INV-101")
+        insertDocument(UUID.randomUUID(), number = null, numberNorm = null)
+        insertDocument(UUID.randomUUID(), number = null, numberNorm = null)
+        insertDocument(UUID.randomUUID(), merchantNorm = "other", number = "INV-100", numberNorm = "inv-100")
+        insertDocument(UUID.randomUUID(), number = "INV-101", numberNorm = "inv-101")
     }
 
     @Test
@@ -244,17 +243,19 @@ class FlywayMigrationTest : PostgresIntegrationTest() {
         id: UUID,
         merchantNorm: String = "cafe",
         number: String? = null,
+        numberNorm: String? = null,
     ) {
         jdbc.update(
             """
             INSERT INTO documents (
                 id, kind, card_owner_id, merchant_raw, merchant_norm,
-                amount_minor, currency, doc_date, document_number
-            ) VALUES (?, 'RECEIPT', 'owner-1', 'Cafe', ?, 1234, 'AUD', DATE '2026-11-21', ?)
+                amount_minor, currency, doc_date, document_number, document_number_norm
+            ) VALUES (?, 'RECEIPT', 'owner-1', 'Cafe', ?, 1234, 'AUD', DATE '2026-11-21', ?, ?)
             """.trimIndent(),
             id,
             merchantNorm,
             number,
+            numberNorm,
         )
     }
 }

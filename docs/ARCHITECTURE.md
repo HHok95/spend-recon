@@ -1,4 +1,4 @@
-# spend-recon: architecture lock (v0.2, 2026-11-21)
+# spend-recon: architecture lock (v0.3, 2026-11-22)
 
 Hok's decisions are recorded under each **Decided** line. Agents build to this file and nothing else.
 
@@ -42,10 +42,11 @@ card_transactions(id uuid pk, card_owner_id text, merchant_raw text, merchant_no
                   status text, created_at timestamptz)
 documents(id uuid pk, kind text check (kind in ('RECEIPT','BILL')), card_owner_id text,
           merchant_raw text, merchant_norm text, amount_minor bigint, currency char(3),
-          tax_minor bigint null, doc_date date, document_number text null, created_at timestamptz)
+          tax_minor bigint null, doc_date date, document_number text null,
+          document_number_norm text null, created_at timestamptz)
   -- unique index documents_merchant_document_number on
-  --   (merchant_norm, lower(btrim(document_number)))
-  --   where the number is not null and not blank. NULL and blank are not exact duplicates.
+  --   (merchant_norm, document_number_norm) where document_number_norm is not null
+  -- document_number_norm is the trimmed, lowercased number, written by the application
 matches(id uuid pk, transaction_id uuid unique references card_transactions,
         document_id uuid null references documents, status text, score numeric(4,3) null,
         rules_fired text[], exception_type text null, version bigint not null default 0,
@@ -64,7 +65,7 @@ outbox(id bigserial pk, aggregate_id uuid, event_type text, payload jsonb,
 ```
 **Decided (Hok, 2026-11-22):** hard-reject only an exact key: the same Idempotency-Key, which stays as it is, or the same receipt or invoice number from the same merchant. A near-match is flagged POSSIBLE_DUPLICATE and routed to EXCEPTION for a person to review. A real repeat purchase is not blocked.
 
-`document_number` is the optional `documentNumber` on `POST /documents`, the receipt or invoice number. The unique index is the exact-key guarantee. Its number is trimmed and lowercased in the database, so a case or surrounding-whitespace variant cannot be inserted. The merchant half is `merchant_norm` (trimmed, lowercased, internal whitespace collapsed). The key is not limited to one card owner. A violation is HTTP 409 problem+json, type `urn:spend-recon:duplicate-document`, title `Duplicate document`. Documents with no number are outside the index. Replaying an Idempotency-Key still follows section 7.
+`document_number` is the optional `documentNumber` on `POST /documents`, the receipt or invoice number, with Unicode whitespace trimmed from both ends. A blank value is stored as null. `document_number_norm` is that trimmed value lowercased. `trimDocumentNumber` is the only trim, and the unique index is on `(merchant_norm, document_number_norm)` where the norm is not null. The index does not trim again. The merchant half is `merchant_norm` (trimmed, lowercased, internal whitespace collapsed). The key is not limited to one card owner. A violation is HTTP 409 problem+json, type `urn:spend-recon:duplicate-document`, title `Duplicate document`. Documents with no number are outside the index. Replaying an Idempotency-Key still follows section 7.
 
 A near-match is another receipt for the same card owner with the same normalized merchant, the same amount and currency, and the same date. That other receipt is the similar document: the check compares those stored fields for equality. The numbers differ, or at least one is missing, because an equal number was rejected at ingest. The result is EXCEPTION, exception type `POSSIBLE_DUPLICATE`, and the rules fired include `R7_DUPLICATE`. The row holds the receipt the matcher would have selected. A sibling already held by a live match still counts, so the free copy is not auto-approved. Auto-approve accepts only `MATCHED`.
 
