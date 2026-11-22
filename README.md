@@ -284,6 +284,30 @@ A later run on the same VM will not print the same numbers.
 
 Not measured: kind, more than one app process, overlapping cardholders (so row locks), a cold JVM, or a client that is not on the same machine. A production p99 would add network time and whatever else is using the database.
 
+## Deploy
+
+The image builds with the Gradle wrapper and runs as a non-root user on Eclipse Temurin 21 JRE Alpine. The JVM flags target a 512 MB machine: the heap is 60% of the cgroup limit, the collector is Serial GC, thread stacks are 512k, the JIT stops at C1, and the process exits on out-of-memory so the platform can restart it.
+
+`fly.toml` is one `shared-cpu-1x` machine with 512 MB for the app `spend-recon-api`. Idle machines stop, and the next request starts one. `min_machines_running` is 0. HTTPS is forced. The check is `GET /actuator/health/readiness`.
+
+Deploy a single machine:
+
+```bash
+flyctl deploy --ha=false
+```
+
+`.github/workflows/deploy.yml` runs that command as `flyctl deploy --remote-only --ha=false` after the CI workflow succeeds on `main`, and on a manual run. It uses `superfly/flyctl-actions/setup-flyctl` at the 1.5 commit and `FLY_API_TOKEN` from the repository secrets. If that secret is absent, the job writes a notice and does not deploy.
+
+The `prod` profile, activated by `fly.toml`, reads the database only from `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, and `SPRING_DATASOURCE_PASSWORD`. `RECON_API_KEY` is required the same way. If any of the four is missing, the process exits during startup and does not use the local database password or `local-dev-key`. The pool size is 3. The JDBC driver sets `sslmode=require`. The profile exposes `/actuator/health` (including readiness and liveness) and does not expose `/actuator/prometheus` or the other actuator routes.
+
+Set the four secrets on the app:
+
+```bash
+fly secrets set SPRING_DATASOURCE_URL='jdbc:postgresql://<host>/<db>?sslmode=require' SPRING_DATASOURCE_USERNAME=<user> SPRING_DATASOURCE_PASSWORD=<password> RECON_API_KEY=$(openssl rand -hex 32) -a spend-recon-api
+```
+
+Compose and kind do not set `prod`. Their database password, API key, and Grafana login stay the local defaults.
+
 ## Demo
 
 Set `spendrecon.demo.enabled=true` to give each visitor a tenant. The `prod` profile turns it on. The `dev` profile does not. Compose sets `SPRING_PROFILES_ACTIVE=dev`, so this machine still uses `X-API-Key` and does not open sessions.
@@ -352,7 +376,7 @@ Amounts are decimal strings. `documentId`, `score`, `decidedBy`, and `decidedAt`
 
 ## What I'd do next
 
-**Deploy hardening.** Compose and `k8s/` use the local password `spendrecon`, the API key `local-dev-key`, and Grafana `admin` / `admin`. Nothing terminates TLS. Compose publishes Postgres on the host. The kind volume is a hostPath with `Retain`: a deleted claim does not bind again, and the files disappear with the kind node. The app image is loaded into kind by `make kind-up`. There is no registry and one replica. Those are local defaults, not a deploy.
+**Creating the app and the database is still a separate step.** The image, `fly.toml`, the `prod` profile, and the deploy workflow are in the repository. Compose and `k8s/` remain local defaults: the password `spendrecon`, the API key `local-dev-key`, Grafana `admin` / `admin`, Postgres published on the host, and a kind volume that disappears with the node.
 
 **R7 is decided (Hok, 2026-11-22), option C.** An exact key is rejected: the same Idempotency-Key, which is unchanged, or the same receipt or invoice number from the same merchant. A near-match, the same merchant, amount, and date, or a similar document, is `POSSIBLE_DUPLICATE` and goes to `EXCEPTION` for a person to review. It is not auto-approved. A real repeat purchase, the same merchant and amount on a different date, or a different receipt number with nothing else matching, is accepted. Section 4 of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 

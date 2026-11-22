@@ -1,0 +1,25 @@
+app = "spend-recon-api"
+primary_region = "syd"
+
+[build]
+
+[env]
+  SPRING_PROFILES_ACTIVE = "prod"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = "60s"
+    interval = "15s"
+    method = "GET"
+    timeout = "5s"
+    path = "/actuator/health/readiness"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

@@ -1,0 +1,40 @@
+# Deploy profile. Compose and kind do not activate it, so their local defaults stay
+# in application.yml. Every secret is required: an unset placeholder stops startup.
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+    hikari:
+      # Free database tiers allow few connections. One process holds at most three.
+      maximum-pool-size: 3
+      minimum-idle: 0
+      data-source-properties:
+        sslmode: require
+  jpa:
+    open-in-view: false
+
+server:
+  # The platform proxy terminates TLS. The process should see the forwarded scheme.
+  forward-headers-strategy: native
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+      group:
+        readiness:
+          include: readinessState,db
+    prometheus:
+      enabled: false
+    info:
+      enabled: false
+
+recon:
+  api-key: ${RECON_API_KEY}
