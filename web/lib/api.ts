@@ -4,9 +4,10 @@
  * Switch [DEMO_SESSION_HEADER] if the sandbox reads the session token from
  * X-Demo-Session instead of Authorization: Bearer.
  *
- * POST /demo/session and GET /demo/export are not on main yet. With
- * NEXT_PUBLIC_DEMO_MOCK=1, and only while NODE_ENV is not production, those
- * two calls return a stand-in. Production never does.
+ * POST /demo/session has no body and returns 201 { tenantId, token, expiresAt }.
+ * Later calls send Authorization: Bearer <token>. GET /demo/export returns
+ * text/csv. With NEXT_PUBLIC_DEMO_MOCK=1, and only while NODE_ENV is not
+ * production, a 404 from those routes uses a stand-in. Production never does.
  */
 
 export const DEMO_SESSION_HEADER = "Authorization" as "Authorization" | "X-Demo-Session";
@@ -398,7 +399,7 @@ export async function getHistory(matchId: string, session: Session): Promise<His
 }
 
 /**
- * Sandbox contract, not on main yet: GET /demo/export returns text/csv for the session.
+ * GET /demo/export returns text/csv for the session. Demo mode off is 404.
  * A 404 is a dev stand-in only when mocks are allowed. Production surfaces the error.
  */
 export async function exportApproved(
@@ -420,8 +421,8 @@ export async function exportApproved(
     const score = approved.score === null ? "" : String(approved.score);
     const documentId = approved.documentId ?? "";
     const csv = [
-      "matchId,transactionId,documentId,status,score,version",
-      [approved.matchId, approved.transactionId, documentId, approved.status, score, approved.version].join(","),
+      "matchId,transactionId,documentId,status,score,merchant,amount,currency,txnDate,decidedBy,decidedAt",
+      [approved.matchId, approved.transactionId, documentId, approved.status, score, "", "", "", "", "", ""].join(","),
     ].join("\n");
     return { csv: `${csv}\n`, mocked: true, status: 200, retryAfter: null };
   }

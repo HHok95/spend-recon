@@ -20,7 +20,7 @@ NEXT_PUBLIC_DEV_API_KEY=local-dev-key
 NEXT_PUBLIC_DEMO_MOCK=1
 ```
 
-`NEXT_PUBLIC_DEV_API_KEY` is the Compose default, sent as `X-API-Key`, because `POST /demo/session` is not on main yet. `NEXT_PUBLIC_DEV_API_KEY` is dev-only. A production build ignores it. `NEXT_PUBLIC_DEMO_MOCK=1` stands in for `POST /demo/session` and `GET /demo/export` while `next dev` is running. A production build ignores the flag.
+`NEXT_PUBLIC_DEV_API_KEY` is the Compose default, sent as `X-API-Key` when demo mode is off. `NEXT_PUBLIC_DEV_API_KEY` is dev-only. A production build ignores it. `NEXT_PUBLIC_DEMO_MOCK=1` stands in for `POST /demo/session` and `GET /demo/export` while `next dev` is running. A production build ignores the flag.
 
 ```bash
 npm run dev
