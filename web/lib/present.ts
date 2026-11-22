@@ -46,7 +46,7 @@ export function versionLine(json: unknown, fallback?: number | null): string {
   return "This response does not include a version.";
 }
 
-export function eventVersion(event: HistoryEvent): string {
+export function eventVersion(event: HistoryEvent): string | null {
   const after = versionOf(event.after);
   if (after !== null) {
     return String(after);
@@ -55,7 +55,17 @@ export function eventVersion(event: HistoryEvent): string {
   if (before !== null) {
     return String(before);
   }
-  return "not included";
+  return null;
+}
+
+export function timelineText(event: HistoryEvent): string {
+  const version = eventVersion(event);
+  const line = version === null ? event.actor : `${event.actor} · version ${version}`;
+  return event.reason ? `${line}. ${event.reason}` : line;
+}
+
+export function eventCountLabel(count: number): string {
+  return `${count} ${count === 1 ? "event" : "events"}`;
 }
 
 export function formatWhen(value: string): string {

@@ -22,7 +22,15 @@ import {
   type Match,
   type PresetBook,
 } from "@/lib/api";
-import { eventVersion, formatScore, formatWhen, messageOf, outboxLine, versionLine } from "@/lib/present";
+import {
+  eventCountLabel,
+  formatScore,
+  formatWhen,
+  messageOf,
+  outboxLine,
+  timelineText,
+  versionLine,
+} from "@/lib/present";
 
 type StepId = "charge" | "receipt" | "match" | "approve" | "export" | "audit";
 
@@ -297,7 +305,7 @@ export function Walkthrough({
         ...previous,
         audit: {
           sentence: "Every event for this match is below.",
-          facts: [{ label: "Events", value: String(events.length) }],
+          facts: [],
           events,
           hood: {
             idempotencyKey: null,
@@ -413,19 +421,19 @@ function slowMessage(error: unknown): string {
 
 function AuditList({ events }: { events: HistoryEvent[] }) {
   return (
-    <Timeline aria-label="Audit timeline">
-      {events.map((event) => (
-        <TimelineItem key={event.id}>
-          <TimelineMarker />
-          <TimelineConnector />
-          <TimelineTitle>{event.eventType}</TimelineTitle>
-          <TimelineTime dateTime={event.createdAt}>{formatWhen(event.createdAt)}</TimelineTime>
-          <TimelineDescription>
-            {event.actor} · version {eventVersion(event)}
-            {event.reason ? `. ${event.reason}` : ""}
-          </TimelineDescription>
-        </TimelineItem>
-      ))}
-    </Timeline>
+    <>
+      <p className="event-count">{eventCountLabel(events.length)}</p>
+      <Timeline aria-label="Audit timeline">
+        {events.map((event) => (
+          <TimelineItem key={event.id}>
+            <TimelineMarker />
+            <TimelineConnector />
+            <TimelineTitle>{event.eventType}</TimelineTitle>
+            <TimelineTime dateTime={event.createdAt}>{formatWhen(event.createdAt)}</TimelineTime>
+            <TimelineDescription>{timelineText(event)}</TimelineDescription>
+          </TimelineItem>
+        ))}
+      </Timeline>
+    </>
   );
 }
