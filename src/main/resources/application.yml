@@ -44,9 +44,8 @@ scalar:
   page-title: spend-recon
 
 # Local default, same idea as the database password in docker-compose.yml.
-# Override with RECON_API_KEY outside this machine.
+# It lives on the non-prod document below so the prod profile cannot fall back to it.
 recon:
-  api-key: ${RECON_API_KEY:local-dev-key}
   idempotency:
     # A second request waits this long for the first transaction to store its response.
     # If the wait expires, the response is 409 and Retry-After is retry-after.
@@ -65,3 +64,11 @@ recon:
     enabled: true
     poll-interval: 1s
     batch-size: 50
+
+---
+spring:
+  config:
+    activate:
+      on-profile: "!prod"
+recon:
+  api-key: local-dev-key
