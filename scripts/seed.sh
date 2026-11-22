@@ -4,6 +4,25 @@
 # Requires curl and jq. The app must already be up.
 set -euo pipefail
 
+need() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "Missing $1." >&2
+    exit 1
+  fi
+}
+need curl
+need jq
+
+# GNU date accepts -d. macOS date does not, and uses -v instead.
+plus_days() {
+  local start="$1" days="$2" plus
+  if plus="$(date -u -d "${start} + ${days} days" +%F 2>/dev/null)"; then
+    printf '%s\n' "${plus}"
+  else
+    date -u -j -f "%Y-%m-%d" "${start}" -v+"${days}"d +%F
+  fi
+}
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASE="${BASE_URL:-http://127.0.0.1:8080}"
 API_KEY="${RECON_API_KEY:-local-dev-key}"
@@ -54,11 +73,13 @@ receipt_count=0
 bill_count=0
 
 for owner_index in "${!owners[@]}"; do
-  owner="${owners[$owner_index]}"
+  # The run id is part of the owner, so a second seed is a separate book.
+  # The same merchant, amount, and date do not share receipts with the first run.
+  owner="${owners[$owner_index]}-${RUN}"
   for case_index in "${!cases[@]}"; do
     IFS='|' read -r name charge_merchant receipt_merchant charge_amount receipt_amount tax expect <<<"${cases[$case_index]}"
     offset=$((owner_index * 40 + case_index * 5))
-    day="$(date -u -d "2026-01-06 + ${offset} days" +%F)"
+    day="$(plus_days 2026-01-06 "${offset}")"
     key_base="seed-${RUN}-${owner}-${name}"
 
     if [[ "${tax}" == "-" ]]; then
@@ -115,7 +136,7 @@ for owner_index in "${!owners[@]}"; do
   done
 
   # A bill is stored and is not a match candidate. Matching selects kind RECEIPT.
-  bill_day="$(date -u -d "2026-01-06 + $((owner_index * 40)) days" +%F)"
+  bill_day="$(plus_days 2026-01-06 "$((owner_index * 40))")"
   bill_body="$(jq -nc \
     --arg owner "${owner}" \
     --arg day "${bill_day}" \
