@@ -224,9 +224,11 @@ async function send(
   if (init.session) {
     applySession(headers, init.session.token);
   }
-  const devKey = process.env.NEXT_PUBLIC_DEV_API_KEY;
-  if (devKey) {
-    headers.set("X-API-Key", devKey);
+  if (process.env.NODE_ENV !== "production") {
+    const devKey = process.env.NEXT_PUBLIC_DEV_API_KEY;
+    if (devKey) {
+      headers.set("X-API-Key", devKey);
+    }
   }
 
   let response: Response;
