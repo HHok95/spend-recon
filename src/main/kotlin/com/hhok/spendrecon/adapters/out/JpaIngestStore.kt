@@ -1,5 +1,6 @@
 package com.hhok.spendrecon.adapters.out
 
+import com.hhok.spendrecon.CurrentTenant
 import com.hhok.spendrecon.application.IngestDocumentCommand
 import com.hhok.spendrecon.application.IngestStore
 import com.hhok.spendrecon.application.IngestTransactionCommand
@@ -11,6 +12,7 @@ import java.util.UUID
 class JpaIngestStore(
     private val transactions: CardTransactionRepository,
     private val documents: DocumentRepository,
+    private val tenants: CurrentTenant,
 ) : IngestStore {
     override fun insertTransaction(
         command: IngestTransactionCommand,
@@ -20,6 +22,7 @@ class JpaIngestStore(
         transactions.saveAndFlush(
             CardTransactionEntity(
                 id = id,
+                tenantId = tenants.id(),
                 cardOwnerId = command.cardOwnerId,
                 merchantRaw = command.merchantRaw,
                 merchantNorm = merchantNorm,
@@ -41,6 +44,7 @@ class JpaIngestStore(
         documents.saveAndFlush(
             DocumentEntity(
                 id = id,
+                tenantId = tenants.id(),
                 kind = command.kind.name,
                 cardOwnerId = command.cardOwnerId,
                 merchantRaw = command.merchantRaw,

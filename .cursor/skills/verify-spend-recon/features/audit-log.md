@@ -24,5 +24,6 @@ Preconditions:
 ## Gotchas
 
 - Do not catch the SQL error and report success without the `append-only` text. A missing table fails too, and that is not this feature.
+- `DELETE` succeeds only when `spendrecon.purge` is `on` in that transaction. This recipe does not set it. `UPDATE` still fails when the setting is on.
 - `TRUNCATE` is not what this recipe proves. The trigger covers `UPDATE` and `DELETE`.
 - Cleanup drops the database with the container. It must not delete the evidence directory, which is the only remaining proof.

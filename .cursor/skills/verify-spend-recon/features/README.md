@@ -46,7 +46,7 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Health](./health.md) covers `GET /actuator/health` reporting `UP` with no API key.
 - [Prometheus scrape](./prometheus.md) covers `GET /actuator/prometheus` exposing the JVM metric.
 - [Scalar API reference](./scalar.md) covers `GET /scalar` rendering the springdoc document at `/v3/api-docs`, and the absence of Swagger UI.
-- [Migrated schema](./schema.md) covers the applied Flyway migrations, the six tables, no duplicate-check column, and the one-live-match index.
+- [Migrated schema](./schema.md) covers the applied Flyway migrations, the tables, no duplicate-check column, and the one-live-match index.
 - [Append-only audit log](./audit-log.md) covers `UPDATE` and `DELETE` on `reconciliation_events` failing while the row stays.
 - [Ingest](./ingest.md) covers `POST /transactions` and `POST /documents`, the API key, decimal-string amounts, and idempotency.
 - [Reconcile](./reconcile.md) covers `POST /reconcile/{txnId}`, auto-approve, `NO_CANDIDATE`, `AMOUNT_MISMATCH`, a receipt held by another live match, and `GET /matches/{id}/history`.

@@ -284,6 +284,72 @@ A later run on the same VM will not print the same numbers.
 
 Not measured: kind, more than one app process, overlapping cardholders (so row locks), a cold JVM, or a client that is not on the same machine. A production p99 would add network time and whatever else is using the database.
 
+## Demo
+
+Set `spendrecon.demo.enabled=true` to give each visitor a tenant. The `prod` profile turns it on. The `dev` profile does not. Compose sets `SPRING_PROFILES_ACTIVE=dev`, so this machine still uses `X-API-Key` and does not open sessions.
+
+`POST /demo/session` has no body. It returns 201:
+
+```json
+{
+  "tenantId": "6f1c0e3a-1e2b-4c5d-8f90-123456789abc",
+  "token": "url-safe-token",
+  "expiresAt": "2026-11-22T13:00:00Z"
+}
+```
+
+Later calls send `Authorization: Bearer <token>`. That token is the credential. It selects the tenant. A missing, unknown, or expired token is 401 `application/problem+json`. Writes still need `Idempotency-Key`.
+
+`card_transactions`, `documents`, `matches`, and `idempotency_keys` carry `tenant_id`. Every read and write for those tables is filtered by the token's tenant. One tenant cannot see another tenant's charges, receipts, matches, or stored idempotent responses.
+
+A new tenant is seeded with three charges and three receipts, card owner `visitor`, date `2026-11-18`, currency `AUD`:
+
+| Merchant | Charge | Receipt | What reconcile does |
+| --- | --- | --- | --- |
+| Northwind Coffee | 18.40, tax 1.67 | same amount and tax | auto-approves, score 1.000 |
+| City Books | 42.00, tax 3.82 | 40.00, tax 3.64 | `EXCEPTION` / `AMOUNT_MISMATCH` |
+| Tram Fare | 4.60, tax 0.42 | same amount and tax | already `APPROVED`, with two audit events |
+
+The session and the tenant expire one hour after creation. A scheduled job deletes expired tenants, including their audit rows. It takes rows with `SELECT ... FOR UPDATE SKIP LOCKED`, so a second process does not delete the same tenant at the same time and a second run deletes nothing. Ordinary `UPDATE` and `DELETE` on `reconciliation_events` still fail. The job sets `spendrecon.purge` for its own transaction only.
+
+Limits live in this process. They are not shared with another machine. `POST /demo/session` allows 10 calls per address per hour. Any other route allows 60 calls per token per minute. The 429 body is `application/problem+json` and the response has `Retry-After`. The address is `Fly-Client-IP` when that header is present, otherwise the socket address.
+
+`BrowserCorsConfig` is the only CORS filter. The `prod` profile allows `https://spend.hokheng.com`. The `dev` profile allows `http://localhost:*` and `http://127.0.0.1:*`. The filter accepts `Authorization`, `X-Demo-Session`, `Idempotency-Key`, `Accept`, `Content-Type`, and `X-API-Key`, and it exposes `Retry-After`. An empty pattern list allows no browser origin.
+
+### Calls the demo uses
+
+`POST /transactions`, `POST /documents`, `POST /reconcile/{txnId}`, `POST /matches/{id}/approve`, and `POST /matches/{id}/reject` keep the bodies and status codes already described above. With demo mode on, send `Authorization: Bearer <token>`. That header is the one the demo page sends, and it is the credential for the call. A request that sends only `X-API-Key` is rejected.
+
+`GET /transactions` returns `{"content":[...]}`. Each item is:
+
+```json
+{
+  "id": "uuid",
+  "cardOwnerId": "visitor",
+  "merchant": "Northwind Coffee",
+  "amount": "18.40",
+  "currency": "AUD",
+  "tax": "1.67",
+  "txnDate": "2026-11-18",
+  "status": "UNMATCHED",
+  "createdAt": "2026-11-22T12:00:00Z"
+}
+```
+
+`GET /transactions/{id}` returns that object, or 404. `GET /documents` returns `{"content":[...]}` with `kind`, `docDate`, and the same money fields.
+
+`GET /transactions/{id}/history` returns the charge's audit events, the same shape as `GET /matches/{id}/history`. An unmatched charge returns `[]`. A charge in another tenant returns 404.
+
+`GET /matches`, `GET /matches/{id}`, and `GET /matches/{id}/history` stay as they are and only return the token's tenant.
+
+`GET /demo/export` returns `text/csv` for rows whose status is `APPROVED` or `MATCHED`. With demo mode off the route is 404. The header is:
+
+```text
+matchId,transactionId,documentId,status,score,merchant,amount,currency,txnDate,decidedBy,decidedAt
+```
+
+Amounts are decimal strings. `documentId`, `score`, `decidedBy`, and `decidedAt` are empty when null.
+
 ## What I'd do next
 
 **Deploy hardening.** Compose and `k8s/` use the local password `spendrecon`, the API key `local-dev-key`, and Grafana `admin` / `admin`. Nothing terminates TLS. Compose publishes Postgres on the host. The kind volume is a hostPath with `Retain`: a deleted claim does not bind again, and the files disappear with the kind node. The app image is loaded into kind by `make kind-up`. There is no registry and one replica. Those are local defaults, not a deploy.

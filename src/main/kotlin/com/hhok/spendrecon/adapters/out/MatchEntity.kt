@@ -7,6 +7,7 @@ import jakarta.persistence.Table
 import jakarta.persistence.Version
 import org.hibernate.annotations.JdbcTypeCode
 import org.hibernate.type.SqlTypes
+import com.hhok.spendrecon.Tenants
 import java.math.BigDecimal
 import java.time.OffsetDateTime
 import java.util.UUID
@@ -20,6 +21,8 @@ import java.util.UUID
 class MatchEntity(
     @Id
     var id: UUID = UUID.randomUUID(),
+    @Column(name = "tenant_id", nullable = false)
+    var tenantId: UUID = Tenants.LOCAL,
     @Column(name = "transaction_id", nullable = false)
     var transactionId: UUID = UUID.randomUUID(),
     @Column(name = "document_id")

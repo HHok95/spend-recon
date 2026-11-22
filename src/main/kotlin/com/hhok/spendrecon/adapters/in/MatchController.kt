@@ -1,5 +1,6 @@
 package com.hhok.spendrecon.adapters.`in`
 
+import com.hhok.spendrecon.CurrentTenant
 import com.hhok.spendrecon.adapters.out.MatchEntity
 import com.hhok.spendrecon.adapters.out.MatchRepository
 import com.hhok.spendrecon.adapters.out.ReconciliationEventEntity
@@ -21,6 +22,7 @@ import java.util.UUID
 class MatchController(
     private val matches: MatchRepository,
     private val events: ReconciliationEventRepository,
+    private val tenants: CurrentTenant,
 ) {
     @GetMapping("/matches")
     @Operation(summary = "List matches, optionally filtered by status")
@@ -37,11 +39,12 @@ class MatchController(
         }
         val filter = parseStatus(status)
         val pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt", "id"))
+        val tenantId = tenants.id()
         val result =
             if (filter == null) {
-                matches.findAll(pageable)
+                matches.findByTenantId(tenantId, pageable)
             } else {
-                matches.findByStatus(filter.name, pageable)
+                matches.findByTenantIdAndStatus(tenantId, filter.name, pageable)
             }
         return MatchPageResponse(
             content = result.content.map { it.toResponse() },
@@ -57,7 +60,7 @@ class MatchController(
         @PathVariable id: String,
     ): MatchResponse {
         val matchId = parseId(id)
-        val match = matches.findById(matchId).orElseThrow { MatchNotFoundException() }
+        val match = matches.findByIdAndTenantId(matchId, tenants.id()).orElseThrow { MatchNotFoundException() }
         return match.toResponse()
     }
 
@@ -67,10 +70,10 @@ class MatchController(
         @PathVariable id: String,
     ): List<MatchHistoryResponse> {
         val matchId = parseId(id)
-        if (!matches.existsById(matchId)) {
+        if (matches.findByIdAndTenantId(matchId, tenants.id()).isEmpty) {
             throw MatchNotFoundException()
         }
-        return events.findByMatchIdOrderByIdAsc(matchId).map { it.toResponse() }
+        return events.findByMatchIdOrderByIdAsc(matchId).map { it.toHistoryResponse() }
     }
 
     private fun parseStatus(status: String?): MatchStatus? {
@@ -139,7 +142,7 @@ private fun MatchEntity.toResponse(): MatchResponse =
         createdAt = createdAt,
     )
 
-private fun ReconciliationEventEntity.toResponse(): MatchHistoryResponse =
+internal fun ReconciliationEventEntity.toHistoryResponse(): MatchHistoryResponse =
     MatchHistoryResponse(
         id = id ?: error("Event id was not assigned."),
         eventType = eventType,
