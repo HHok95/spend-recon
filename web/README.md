@@ -1,6 +1,6 @@
-# spend-recon demo
+# spend-recon web
 
-Public walkthrough for the spend-recon API. The page is static. The browser calls the API after it loads.
+`/` is the landing page. `/demo` is the public walkthrough for the spend-recon API. The walkthrough page is static. The browser calls the API after it loads.
 
 ## Local
 
@@ -26,7 +26,7 @@ NEXT_PUBLIC_DEMO_MOCK=1
 npm run dev
 ```
 
-Open http://localhost:3000.
+Open http://localhost:3000 for the landing page. The walkthrough is at http://localhost:3000/demo.
 
 ```bash
 npm run lint

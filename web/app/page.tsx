@@ -1,25 +1,31 @@
-import { Demo } from "@/components/demo";
-import { StartLink } from "@/components/start-link";
+import type { Metadata } from "next";
+import { Instrument_Sans, JetBrains_Mono } from "next/font/google";
+import { Landing } from "@/components/landing/view";
+import "./landing.css";
 
-export default function Home() {
+const sans = Instrument_Sans({
+  subsets: ["latin"],
+  display: "optional",
+  variable: "--font-landing-sans",
+});
+
+const mono = JetBrains_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700", "800"],
+  display: "optional",
+  variable: "--font-landing-mono",
+});
+
+export const metadata: Metadata = {
+  description:
+    "Each card charge is scored against its receipts. Strong matches clear on their own, the rest wait for a person, and every change is on the record.",
+};
+
+export default function Page() {
   return (
-    <main className="page">
-      <header className="hero">
-        <p className="kicker">spend-recon</p>
-        <h1>A backend that turns card spend into matched, approved, auditable records, safely.</h1>
-        <div className="hero-actions">
-          <StartLink />
-          <nav aria-label="Elsewhere">
-            <a href="https://github.com/HHok95/spend-recon" target="_blank" rel="noopener noreferrer">
-              GitHub
-            </a>
-            <a href="https://hokheng.com" target="_blank" rel="noopener noreferrer">
-              hokheng.com
-            </a>
-          </nav>
-        </div>
-      </header>
-      <Demo />
-    </main>
+    <>
+      <link rel="preload" as="image" href="/landing/hero.webp" media="(min-width: 768px)" type="image/webp" />
+      <Landing fontClass={`${sans.variable} ${mono.variable}`} />
+    </>
   );
 }
