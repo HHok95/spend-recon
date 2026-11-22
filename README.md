@@ -1,35 +1,41 @@
 # spend-recon
 
-Card-transaction to receipt reconciliation.
+A company card charge and a receipt are two records of the same spend, and they often do not line up. The name on the card is not the name on the receipt. The amounts differ. The receipt never arrives. Two receipts could fit one charge. Finance still has to say which charge is backed by which receipt, which ones a person must look at, and who made that call.
 
-The locked design is [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). This service records card transactions and documents, matches a charge to a receipt, and writes one audit event per transition. A person can approve or reject a match. Approving writes an outbox row, and a poller publishes it.
+This service records the charge and the receipt, matches them with fixed rules, and keeps an audit row for every status change. A strong match is approved by the service. A weaker one waits for a person to approve or reject it. An approval also writes an outbox row, so an accounting export can be told later without making the approval wait on that export.
 
-## Requirements
+One charge moves like this:
+
+1. `POST /transactions` records the charge. Its status is `UNMATCHED`.
+2. `POST /documents` records the receipt (`kind` `RECEIPT`) or a bill.
+3. `POST /reconcile/{txnId}` matches the charge. The result is `MATCHED`, `SUGGESTED`, or `EXCEPTION`.
+4. A `MATCHED` score of at least 0.95 is stored as `APPROVED` in that same request. Any other result waits. A person calls `POST /matches/{id}/approve` or `POST /matches/{id}/reject`.
+5. Approve, by the service or by a person, inserts one `MatchConfirmed` row into `outbox` in the same database transaction. A poller publishes it.
+6. Every transition appends one row to `reconciliation_events`. A trigger rejects `UPDATE` and `DELETE` on that table.
+
+The locked design, including the rule table, is [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). This file is the short version of that design and the commands that exercise it.
+
+## Quickstart
 
 - JDK 21
-- Docker, for Testcontainers and `docker compose`
+- Docker, for `./gradlew build` and for Compose
+- curl and jq, for the walkthrough and `scripts/seed.sh`
+- k6, for `make load`
 
-Stack: Kotlin 2.2, Spring Boot 3.5, Gradle Kotlin DSL, PostgreSQL 16, Flyway.
-
-## Build
+Kotlin 2.2.21, Spring Boot 3.5.16, Gradle Kotlin DSL, PostgreSQL 16, Flyway.
 
 ```bash
 ./gradlew build
-```
-
-`./gradlew build` starts a Postgres 16 container and runs the migration, health, and audit tests.
-
-## Run
-
-```bash
 docker compose up --build
 ```
+
+`./gradlew build` starts a Postgres 16 container and runs the tests. `docker compose up --build` starts Postgres, the app, Prometheus, and Grafana.
 
 - Health: http://localhost:8080/actuator/health
 - Metrics: http://localhost:8080/actuator/prometheus
 - API reference (Scalar): http://localhost:8080/scalar
 
-Postgres is published on `localhost:5432` as database `spendrecon`, user `spendrecon`, password `spendrecon`. Those values are local defaults.
+Postgres is published on `localhost:5432` as database `spendrecon`, user `spendrecon`, password `spendrecon`. Those values are local defaults. Writes need `X-API-Key: local-dev-key` unless `RECON_API_KEY` is set.
 
 ## Kubernetes (kind)
 
@@ -47,60 +53,239 @@ A cluster created before this change has no ownership label and is refused. Remo
 
 The database password and `RECON_API_KEY` in `k8s/` are the same local defaults as Compose. They are not real credentials.
 
+## Happy path
+
+From the repository root, with Compose up and `jq` installed. The idempotency keys are fixed. The same keys and the same bodies replay the stored responses. Use new keys to insert new rows.
+
+A charge and a receipt for the same cardholder, merchant, amount, currency, tax, and date score 1.000. That is `MATCHED`, and 1.000 is above the auto-approve threshold of 0.95, so the stored status is `APPROVED`.
+
+```bash
+base=http://127.0.0.1:8080
+api_key=local-dev-key
+
+charge=$(curl -fsS \
+  -H 'Content-Type: application/json' \
+  -H "X-API-Key: ${api_key}" \
+  -H 'Idempotency-Key: walk-charge-1' \
+  -d '{"cardOwnerId":"ada.ng","merchant":"Woolworths Metro","amount":"42.50","currency":"AUD","txnDate":"2026-11-20","tax":"3.86"}' \
+  "${base}/transactions")
+printf '%s\n' "${charge}"
+charge_id=$(printf '%s' "${charge}" | jq -r '.id')
+
+receipt=$(curl -fsS \
+  -H 'Content-Type: application/json' \
+  -H "X-API-Key: ${api_key}" \
+  -H 'Idempotency-Key: walk-receipt-1' \
+  -d '{"kind":"RECEIPT","cardOwnerId":"ada.ng","merchant":"Woolworths Metro","amount":"42.50","currency":"AUD","docDate":"2026-11-20","tax":"3.86"}' \
+  "${base}/documents")
+printf '%s\n' "${receipt}"
+
+match=$(curl -fsS -X POST \
+  -H "X-API-Key: ${api_key}" \
+  -H 'Idempotency-Key: walk-reconcile-1' \
+  "${base}/reconcile/${charge_id}")
+printf '%s\n' "${match}"
+match_id=$(printf '%s' "${match}" | jq -r '.matchId')
+
+printf '%s\n' "$(curl -fsS "${base}/matches/${match_id}")"
+printf '%s\n' "$(curl -fsS "${base}/matches/${match_id}/history")"
+
+sleep 3
+docker compose exec -T postgres \
+  psql -U spendrecon -d spendrecon -c \
+  "SELECT event_type, (published_at IS NOT NULL) AS published FROM outbox WHERE aggregate_id = '${match_id}';"
+```
+
+The charge response has `"status":"UNMATCHED"`. Reconcile returns `"status":"APPROVED"` and `"score":1.000`. `GET /matches/{id}` shows `decidedBy` `system:auto-approve` and `version` 0: the row is inserted already approved. History is two events, `MATCHED` by `system:matching`, then `APPROVED` by `system:auto-approve`. The outbox query returns `MatchConfirmed` with `published` true after the poller, which runs every second. There is no HTTP route for the outbox.
+
+`GET /matches` and `GET /matches/{id}/history` do not check `X-API-Key`. The three `POST`s do.
+
+## Architecture
+
+Hexagonal, and light. `domain` does not import Spring. The REST adapters call the application services. Those services write Postgres. The poller is the only publisher.
+
+```mermaid
+flowchart TB
+  client[HTTP client]
+  subgraph proc[spend-recon process]
+    writes[ApiKeyFilter on POST]
+    http[Ingest, reconcile, decision, and match controllers]
+    services[IngestService, MatchingService, ApprovalService, IdempotencyService]
+    rules[Money and matchReceipts]
+    poller[OutboxPublisher]
+    stub[LoggingAccountingExport]
+  end
+  db[(PostgreSQL 16)]
+  prom[Prometheus]
+  graf[Grafana]
+
+  client -->|GET, no API key| http
+  client -->|POST with X-API-Key| writes
+  writes --> http
+  http --> services
+  services --> rules
+  services --> db
+  poller -->|FOR UPDATE SKIP LOCKED| db
+  poller --> stub
+  proc -->|Micrometer text| prom
+  prom --> graf
+```
+
+Compose runs all four boxes: the process, Postgres, Prometheus, and Grafana. `make kind-up` runs the process and Postgres only. `LoggingAccountingExport` logs the event and remembers the outbox id in this process. It is the stand-in for the accounting system.
+
+## Match states
+
+Score is `0.7 * merchant + 0.3 * tax`, rounded half up to three decimal places. Merchant is Jaro-Winkler on the normalized name. Tax is 1 when both sides have a tax and the minor units are equal, and 0 otherwise. A score of at least 0.85 is `MATCHED`. Below that, or when two receipts tie, the result is `SUGGESTED`. The tie holds the receipt with the lowest document id.
+
+```mermaid
+stateDiagram-v2
+  [*] --> UNMATCHED: POST /transactions
+  UNMATCHED --> MATCHED: one receipt and score at least 0.85
+  UNMATCHED --> SUGGESTED: score under 0.85, or a tie
+  UNMATCHED --> EXCEPTION: nothing to hold, or a currency or amount miss
+  MATCHED --> APPROVED: auto-approve at 0.95, or a person
+  SUGGESTED --> APPROVED: a person approves
+  EXCEPTION --> APPROVED: a person approves with a reason
+  MATCHED --> REJECTED: a person rejects
+  SUGGESTED --> REJECTED: a person rejects
+  EXCEPTION --> REJECTED: a person rejects
+  REJECTED --> MATCHED: reconcile the same row
+  REJECTED --> SUGGESTED: reconcile the same row
+  REJECTED --> EXCEPTION: reconcile the same row
+```
+
+Auto-approve does not leave the row sitting in `MATCHED`. The reconcile response status is `APPROVED`, `version` is 0, and the `MATCHED` step is the first history event. `SUGGESTED` and `EXCEPTION` are never auto-approved. A threshold above 1.0 turns auto-approve off. `APPROVED` is terminal. Reconciling it again returns 409. `REJECTED` is terminal for approve and reject, and reconcile is the only way back: it updates that same row.
+
+The rules, the 3-day window, and the owner filter are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) section 6. A bill is stored and is not a candidate. Matching reads `kind = 'RECEIPT'`.
+
+## Design trade-offs
+
+Each one is a decision already in the code and in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The reason is the part to defend.
+
+**Money is minor units plus a currency.** AUD 12.34 is stored as `1234` and `AUD`. JPY 500 is `500` and `JPY`. The scale comes from `java.util.Currency`. The API field is a decimal string. A JSON number is a 400, because a binary float cannot represent 0.10 exactly. Adding two amounts of different currencies throws. Postgres columns are `amount_minor BIGINT` and `currency CHAR(3)`. Section 3.
+
+**Idempotency keys.** Every write sends `Idempotency-Key`. The key is unique with the endpoint, so the same token on `POST /transactions` and `POST /documents` is two keys. The service inserts the key with `ON CONFLICT DO NOTHING` in the same transaction as the business write. The same key and the same raw body return the stored response and increment `idempotent_replays_total`. The same key and a different body return 422. A key whose response is not stored yet returns 409 with `Retry-After`. A 400 does not consume the key. Section 7.
+
+**`matches.score` is nullable, with checks.** V1 created `score NOT NULL`. V2 drops that and adds two checks: `score` is null exactly when `document_id` is null, and a score is null or between 0 and 1. A match with no receipt has no score to invent. A match that holds a receipt always has one.
+
+**An `EXCEPTION` holds its receipt, and a held receipt is skipped.** The partial unique index `matches_one_live_per_document` allows one non-`REJECTED` match per document. A currency or amount miss on a single close receipt becomes an `EXCEPTION` that points at that receipt, so a second charge cannot take it. If every remaining receipt is already held, the result is `NO_CANDIDATE`. Reject frees the receipt. Section 5.
+
+**`NO_CANDIDATE`.** No receipt, or every receipt dropped by the owner filter, the 3-day window, or a live hold. It is also the result when a currency or amount miss is too far on the merchant name to hold. `document_id` is null and `score` is null. Several misses that do clear the merchant bar become an `EXCEPTION` with no receipt, so the service does not block an arbitrary one of them. Section 6.
+
+**The minimum merchant score is 0.60.** `recon.exception.min-merchant-score`, default `"0.60"`. A currency or amount miss holds the receipt only when Jaro-Winkler on `merchant_norm` is at least 0.60. Below that the receipt stays free and the result is `NO_CANDIDATE`. The exception audit event stores `minMerchantScore`. The quoted YAML value keeps it a decimal. Section 6.
+
+**`@Version` and a 409 in problem+json.** `matches.version` starts at 0. Approve and reject send the version the caller read. A stale version is 409, `Content-Type: application/problem+json`, detail `The match version is stale. Reload the match and retry with the current version.` The counter `optimistic_lock_conflicts_total` increments. Two approves at the same version produce one 200 and one 409. The body shape is `type`, `title`, `status`, and `detail`.
+
+**Lock order is the charge, then the match, then the receipts.** Reconcile takes `FOR UPDATE` on the charge, then on the match row if there is one, then on that owner's receipts in the date window, `ORDER BY id`. Approve and reject read the match id without locking it, then lock the charge before they load the match. Same order, so a reject and a reconcile of one charge do not deadlock. `DecisionApiTest` holds the charge lock and runs both. Receipt locks are limited to the owner and the window because rows outside those filters cannot change the decision.
+
+**A lock failure is 409 with `Retry-After`.** `CannotAcquireLockException` and a deadlock (`DeadlockLoserDataAccessException`, which is a `PessimisticLockingFailureException`) return 409, problem+json, detail `The row is busy. Retry the request.`, and `Retry-After` from `recon.idempotency.retry-after` (1 second). That counter does not increment. The stale-version 409 has no `Retry-After`. An idempotency key that is still in flight is a different 409, also with `Retry-After`, detail `A request with this Idempotency-Key is still in flight.`
+
+**The outbox is `FOR UPDATE SKIP LOCKED`, at least once.** Approve inserts `MatchConfirmed` in the same transaction as the status change. Every second the poller locks up to 50 unpublished rows with `FOR UPDATE SKIP LOCKED`, hands each to `LoggingAccountingExport`, then sets `published_at`. A second poller takes the next rows. If publish throws, the row stays unpublished and the next poll tries again. The stub skips an outbox id it has already accepted in this process. A restart can log that id again. The consumer is expected to de-duplicate by outbox id. `outbox_lag_seconds` is the age of the oldest unpublished row, or 0 when the queue is empty. Section 8.
+
+**A rejected charge reconciles by reusing the match row.** `transaction_id` is unique, so a second match row is not inserted. Reconcile locks the `REJECTED` row, sets `document_id` and `score` from the new decision, and `@Version` increments. History shows the reject and then the new result. Any other existing status returns 409, detail `This transaction already has a match.` A re-match may select a receipt this charge already rejected. Skipping those receipts is not built. Section 5.
+
 ## Observability
 
-`docker compose up` also starts Prometheus and Grafana. They are part of this local stack. CI runs `./gradlew build` and does not start them.
+`docker compose up` starts Prometheus and Grafana. CI runs `./gradlew build` and does not start them. kind does not start them either.
 
 - Prometheus: http://localhost:9090
-  It scrapes `http://app:8080/actuator/prometheus` every 5 seconds. The job name is `spend-recon`. The targets page is http://localhost:9090/targets
+  It scrapes `http://app:8080/actuator/prometheus` every 5 seconds. The job name is `spend-recon`. Targets: http://localhost:9090/targets
 - Grafana: http://localhost:3000
-  User `admin`, password `admin`. That login is for this local Compose stack only. Do not reuse it on another machine.
-  Grafana loads `monitoring/grafana/dashboards/spend-recon.json` at startup. The dashboard is http://localhost:3000/d/spend-recon/spend-recon
+  User `admin`, password `admin`. That login is for this Compose stack only.
+  The dashboard is provisioned from `monitoring/grafana/dashboards/spend-recon.json`. Open http://localhost:3000/d/spend-recon/spend-recon
 
-The dashboard has a panel for each metric in section 9 of the architecture. `idempotent_replays_total` has samples while the app is running, because ingest registers that counter. Matching records `recon_matches_total{result}`, `recon_match_latency_seconds`, `recon_exceptions_total{type}`, and `recon_auto_approvals_total`. Approve and reject record `optimistic_lock_conflicts_total` when a version is stale. `outbox_lag_seconds` is the age of the oldest unpublished outbox row, or zero when the queue is empty.
+Micrometer publishes the architecture's names like this:
 
-## Ingest
+| Metric | What it counts |
+| --- | --- |
+| `recon_matches_total{result}` | The decision before auto-approve: `MATCHED`, `SUGGESTED`, or `EXCEPTION` |
+| `recon_match_latency_seconds` | Time to decide a match and write it |
+| `recon_exceptions_total{type}` | `CURRENCY_MISMATCH`, `AMOUNT_MISMATCH`, or `NO_CANDIDATE` |
+| `recon_auto_approvals_total` | Rows stored as `APPROVED` because the score met the threshold |
+| `idempotent_replays_total` | Stored responses returned for a repeated key. The counter exists as soon as ingest starts |
+| `optimistic_lock_conflicts_total` | Approve or reject calls whose version was stale |
+| `outbox_lag_seconds` | Age of the oldest unpublished outbox row, or 0 |
 
-`POST /transactions` and `POST /documents` need two headers:
+The dashboard has one panel for each of those. A perfect match increments `recon_matches_total{result="MATCHED"}` and `recon_auto_approvals_total`. It does not increment `recon_matches_total{result="APPROVED"}`. `APPROVED` is the stored status, not the `result` tag.
 
-- `X-API-Key`. The local default is `local-dev-key`. Set `RECON_API_KEY` to override it.
-- `Idempotency-Key`. A client-chosen token. The same token and the same raw body return the original response. The same token and a different body return 422. A token whose first request has not stored a response yet returns 409 with `Retry-After`.
+## Testing
 
-Amounts are decimal strings. `12.34` with currency `AUD` is stored as 1234 minor units. A JSON number is rejected.
+`./gradlew build` runs the suite on Testcontainers Postgres 16. CI runs that command. The tests that carry the architecture's claims:
 
-```bash
-curl -sS -D - \
-  -H 'Content-Type: application/json' \
-  -H 'X-API-Key: local-dev-key' \
-  -H 'Idempotency-Key: demo-1' \
-  -d '{"cardOwnerId":"owner-1","merchant":"Cafe","amount":"12.34","currency":"AUD","txnDate":"2026-11-21"}' \
-  http://localhost:8080/transactions
-```
+- **Rules.** `MatchingRulesTest` covers R1 through R6, the 0.60 hold, the tie, and auto-approve at, under, and above the threshold.
+- **Money.** `MoneyPropertyTest` is a Kotest property test: a decimal string round-trips to the same minor units, addition adds those units, and two currencies throw.
+- **Idempotency.** Ten parallel posts with one key create one row and nine replays.
+- **Races.** Two parallel approves at one version produce one 200 and one 409. A reject and a reconcile of one charge both finish, with no second match row. Two pollers using `SKIP LOCKED` each publish one row. Two reconciles can compete for one receipt without a 500.
+- **Audit.** `UPDATE` or `DELETE` on `reconciliation_events` fails. The trigger message contains `append-only`.
+- **Outbox.** A row committed while the poller is off is published when the poller runs. A publish that throws leaves the row unpublished, and the next poll delivers it.
 
-## Reconcile
+## Load
 
-`POST /reconcile/{txnId}` uses the same two headers. The body may be empty. A match whose score is at least `0.95` and whose status is `MATCHED` is stored as `APPROVED`, with actor `system:auto-approve`. The response status is that stored status. `GET /matches/{id}/history` returns one event per transition. `GET /matches/{id}` includes `version`.
+`scripts/seed.sh` posts a book through the public API: 8 cardholders, 5 charges each, a receipt for four of those charges, and one Telstra bill per cardholder. The bill is not a match candidate. Dates for one cardholder are five days apart, outside the 3-day window. `make load` then runs two k6 scripts against that Compose app.
 
-A charge with no receipt returns status `EXCEPTION`, exception type `NO_CANDIDATE`, and JSON `score` null. A charge that finds one receipt with a different amount keeps that receipt as `AMOUNT_MISMATCH` when the merchant names score at least 0.60. A more distant merchant name leaves the receipt free. Another charge cannot take a receipt a live match already holds.
+`scripts/load/reconcile-seed.js` reconciles each seeded charge once, with 4 VUs. `scripts/load/happy-path.js` runs for 30 seconds at 4 VUs. Each iteration is a new cardholder, a Woolworths charge of 42.50 AUD with tax 3.86, a matching receipt, and a reconcile. Owners do not overlap, so this run does not measure lock contention.
 
-```bash
-curl -sS -D - -X POST \
-  -H 'X-API-Key: local-dev-key' \
-  -H 'Idempotency-Key: recon-1' \
-  http://localhost:8080/reconcile/00000000-0000-0000-0000-000000000000
-```
+The scripts print k6's summary values. `http_req_failed` is the fraction of responses with status 0 or 400 and above. `http_reqs` counts completed HTTP calls. On the happy path, one match is three calls, and the iteration rate counts finished matches. `http_req_duration` is the time for one call. p50 is the median: half of the calls finished in that time or less. p95 is the time 95 percent finished within. p99 is the same for 99 percent. On a 30 second run, p99 is the slow end of that sample. The reconcile-seed run is 40 calls, so its percentiles are a small sample.
 
-## Approve and reject
+The app and Postgres are the Compose stack from this repository, on one VM, with no CPU or memory limits in `docker-compose.yml`. Postgres is `postgres:16-alpine` on the same machine.
 
-`POST /matches/{id}/approve` and `POST /matches/{id}/reject` use the same two headers. The body carries the match `version` from `GET /matches/{id}`, an `actor`, and a `reason`. Reject requires a reason. Approve requires one only when the match is `EXCEPTION`. A version that is not current returns 409. The match then moves to `APPROVED` or `REJECTED`, and one audit row is written in that same transaction. Reject sets the charge back to `UNMATCHED` and frees the receipt. Approve also writes one `MatchConfirmed` outbox row.
+Measured on 2026-11-22, after `docker compose down` and `docker compose up -d` so Postgres was empty. Compose has no host volume. Prometheus and Grafana were up, and Prometheus was scraping the app every 5 seconds. `make load` then seeded the book, reconciled it, and ran the 30 second happy path. k6 v2.4.0 ran on the host, not in a container. Times below are milliseconds, which is the unit k6 uses for `http_req_duration` and `iteration_duration`. The figures are the summary values k6 wrote.
 
-Reconciling a charge whose match is `REJECTED` reuses that same row. The row is locked, `document_id` and `score` are set to the new decision, and `version` increments. `GET /matches/{id}/history` shows the reject and then the new match. `transaction_id` stays unique. A match in any other status still returns 409. A re-match may select a receipt this charge already rejected. Skipping those receipts is not built yet.
+The machine was a KVM guest, Linux 6.12.113+, 4 vCPU, `Intel(R) Xeon(R) Processor` (family 6, model 207), `MemTotal` 16387328 kB. Docker 29.1.3, Compose 2.40.3. The app container is the image this repo builds on Eclipse Temurin 21. Postgres is `postgres:16-alpine`.
 
-```bash
-curl -sS -D - -X POST \
-  -H 'Content-Type: application/json' \
-  -H 'X-API-Key: local-dev-key' \
-  -H 'Idempotency-Key: approve-1' \
-  -d '{"version":0,"actor":"sam","reason":"same trip"}' \
-  http://localhost:8080/matches/00000000-0000-0000-0000-000000000000/approve
-```
+**Seeded book, one reconcile each.** 40 requests, all HTTP 200, and all 80 checks passed (status 200, and the body status matched the case: `APPROVED`, `SUGGESTED`, `MATCHED`, or `EXCEPTION`). Wall time `testRunDurationMs` 162.279587. k6's `http_reqs` rate was 246.48817968707303 per second: those 40 calls divided by that duration.
+
+| | milliseconds |
+| --- | --- |
+| p50 | 12.459611500000001 |
+| p95 | 50.86206824999999 |
+| p99 | 52.286177009999996 |
+| avg | 15.799267 |
+
+`http_req_failed` rate was 0. Forty calls is a small sample. p99 here is one or two slow calls in that sample.
+
+**Happy path, 30 seconds, 4 VUs, a new cardholder every iteration.** The JVM had already handled the seed and the 40 reconciles.
+
+| | value |
+| --- | --- |
+| `testRunDurationMs` | 30009.46246 |
+| `http_reqs` count | 36429 |
+| `http_reqs` rate | 1213.9171119295017 per second |
+| iterations | 12143 |
+| iteration rate | 404.6390373098339 per second |
+| `http_req_failed` rate | 0 |
+| checks | rate 1, 48572 passes, 0 fails |
+
+12143 iterations times 3 calls is 36429, so every iteration finished the charge, the receipt, and the reconcile. 48572 passes is 4 checks times 12143, including `status` `APPROVED` on every reconcile.
+
+`http_req_duration` is one HTTP call:
+
+| | milliseconds |
+| --- | --- |
+| p50 | 1.883321 |
+| p95 | 7.8535946 |
+| p99 | 9.8722702 |
+| avg | 3.193998926047926 |
+
+`iteration_duration` is one charge, one receipt, and one reconcile, including the time k6 spent between the calls:
+
+| | milliseconds |
+| --- | --- |
+| p50 | 9.423216 |
+| p95 | 14.694316899999999 |
+| p99 | 21.468025639999997 |
+| avg | 9.87539726113812 |
+
+A later run on the same VM will not print the same decimals.
+
+Not measured: kind, more than one app process, overlapping cardholders (so row locks), a cold JVM, or a client that is not on the same machine. A production p99 would add network time and whatever else is using the database.
+
+## What I'd do next
+
+**Deploy hardening.** Compose and `k8s/` use the local password `spendrecon`, the API key `local-dev-key`, and Grafana `admin` / `admin`. Nothing terminates TLS. Compose publishes Postgres on the host. The kind volume is a hostPath with `Retain`: a deleted claim does not bind again, and the files disappear with the kind node. The app image is loaded into kind by `make kind-up`. There is no registry and one replica. Those are local defaults, not a deploy.
+
+**R7, the duplicate check, is still open.** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) section 4 records it. A content hash was proposed and not accepted. `DUPLICATE_DOCUMENT` is not a result the engine can return. Two receipts with the same owner, merchant, amount, currency, and date are two documents.
+
+**A re-match can pick a receipt this charge already rejected.** The hold skips receipts locked by another live match. It does not skip a receipt this charge rejected earlier.
+
+`POST /matches/{id}/suggest` is listed in the architecture and is not built. The accounting export is a log line, and its de-dupe set lives in the process.
