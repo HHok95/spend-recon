@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.hhok.spendrecon.adapters.`in`.DemoRateLimiter
 import com.hhok.spendrecon.application.DemoCleanup
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -16,6 +17,7 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.sql.DriverManager
+import java.sql.SQLException
 import java.time.Duration
 import java.util.UUID
 
@@ -56,9 +58,12 @@ class DemoApiTest : PostgresIntegrationTest() {
     fun `a session is seeded and the bearer token drives reconcile approve export and history`() {
         val opened = openSession()
         val token = opened["token"].asText()
-        val missing = get("/transactions", token = null)
+        val missing = get("/transactions", token = null, origin = "https://spend.hokheng.com")
         assertThat(missing.statusCode()).isEqualTo(401)
         assertThat(missing.headers().firstValue("Content-Type").orElse("")).contains("application/problem+json")
+        assertThat(missing.headers().firstValue("Access-Control-Allow-Origin").orElse(""))
+            .isEqualTo("https://spend.hokheng.com")
+        assertThat(missing.headers().firstValue("Access-Control-Expose-Headers").orElse("")).contains("Retry-After")
 
         val keyOnly =
             post(
@@ -190,6 +195,78 @@ class DemoApiTest : PostgresIntegrationTest() {
         val expiredToken = get("/transactions", expired["token"].asText())
         assertThat(expiredToken.statusCode()).isEqualTo(401)
         assertThat(get("/transactions", live["token"].asText()).statusCode()).isEqualTo(200)
+
+        val liveMatch =
+            jdbc.queryForObject(
+                "SELECT id FROM matches WHERE tenant_id = ?",
+                UUID::class.java,
+                liveId,
+            )
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.autoCommit = false
+            connection.createStatement().execute("SET LOCAL spendrecon.purge = 'on'")
+            connection.prepareStatement("DELETE FROM reconciliation_events WHERE match_id = ?").use { statement ->
+                statement.setObject(1, liveMatch)
+                assertThatThrownBy { statement.executeUpdate() }.isInstanceOf(SQLException::class.java)
+            }
+            connection.rollback()
+        }
+        assertThat(eventCount(liveId)).isEqualTo(2)
+    }
+
+    @Test
+    fun `the same receipt number is allowed in another tenant and rejected in this one`() {
+        val first = openSession()
+        val second = openSession()
+        val body =
+            """
+            {"kind":"RECEIPT","cardOwnerId":"visitor","merchant":"Northwind Coffee","amount":"3.00","currency":"AUD","docDate":"2026-11-18","documentNumber":"INV-9"}
+            """.trimIndent()
+        assertThat(post("/documents", body, first["token"].asText(), uniqueKey()).statusCode()).isEqualTo(201)
+        assertThat(post("/documents", body, second["token"].asText(), uniqueKey()).statusCode()).isEqualTo(201)
+        assertThat(post("/documents", body, first["token"].asText(), uniqueKey()).statusCode()).isEqualTo(409)
+    }
+
+    @Test
+    fun `lists are newest first and a limit above 200 is rejected`() {
+        val opened = openSession()
+        val token = opened["token"].asText()
+        val tenantId = UUID.fromString(opened["tenantId"].asText())
+        jdbc.update(
+            "UPDATE card_transactions SET created_at = now() - interval '2 hours' WHERE tenant_id = ? AND merchant_raw = 'Northwind Coffee'",
+            tenantId,
+        )
+        jdbc.update(
+            "UPDATE card_transactions SET created_at = now() - interval '1 hour' WHERE tenant_id = ? AND merchant_raw = 'City Books'",
+            tenantId,
+        )
+        jdbc.update(
+            "UPDATE card_transactions SET created_at = now() WHERE tenant_id = ? AND merchant_raw = 'Tram Fare'",
+            tenantId,
+        )
+        val newest = json.readTree(get("/transactions?limit=1", token).body())["content"]
+        assertThat(newest).hasSize(1)
+        assertThat(newest[0]["merchant"].asText()).isEqualTo("Tram Fare")
+        val ordered = json.readTree(get("/transactions", token).body())["content"].map { it["merchant"].asText() }
+        assertThat(ordered).containsExactly("Tram Fare", "City Books", "Northwind Coffee")
+        assertThat(get("/transactions?limit=201", token).statusCode()).isEqualTo(400)
+    }
+
+    @Test
+    fun `export prefixes a cell that a spreadsheet would treat as a formula`() {
+        val opened = openSession()
+        val token = opened["token"].asText()
+        val tenantId = UUID.fromString(opened["tenantId"].asText())
+        for (merchant in listOf("=1+1", "+1+1", "-1+1", "@SUM(1)", "\t1+1", "\r1+1")) {
+            jdbc.update(
+                "UPDATE card_transactions SET merchant_raw = ? WHERE tenant_id = ? AND status = 'APPROVED'",
+                merchant,
+                tenantId,
+            )
+            val exported = get("/demo/export", token)
+            assertThat(exported.statusCode()).isEqualTo(200)
+            assertThat(exported.body()).contains("'$merchant")
+        }
     }
 
     @Test
@@ -273,6 +350,7 @@ class DemoApiTest : PostgresIntegrationTest() {
     private fun get(
         path: String,
         token: String?,
+        origin: String? = null,
     ): HttpResponse<String> {
         val builder =
             HttpRequest
@@ -281,6 +359,9 @@ class DemoApiTest : PostgresIntegrationTest() {
                 .GET()
         if (token != null) {
             builder.header("Authorization", "Bearer $token")
+        }
+        if (origin != null) {
+            builder.header("Origin", origin)
         }
         return http.send(builder.build(), HttpResponse.BodyHandlers.ofString())
     }

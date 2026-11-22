@@ -20,6 +20,7 @@ import java.time.Duration
         "spendrecon.demo.cleanup-interval=1h",
         "spendrecon.demo.session-creates-per-hour=2",
         "spendrecon.demo.requests-per-minute=2",
+        "spendrecon.cors.allowed-origin-patterns[0]=https://spend.hokheng.com",
     ],
 )
 class DemoRateLimitTest : PostgresIntegrationTest() {
@@ -41,10 +42,13 @@ class DemoRateLimitTest : PostgresIntegrationTest() {
     fun `the third session from one address is 429`() {
         assertThat(postSession().statusCode()).isEqualTo(201)
         assertThat(postSession().statusCode()).isEqualTo(201)
-        val blocked = postSession()
+        val blocked = postSession(origin = "https://spend.hokheng.com")
         assertThat(blocked.statusCode()).isEqualTo(429)
         assertThat(blocked.headers().firstValue("Content-Type").orElse("")).contains("application/problem+json")
         assertThat(blocked.headers().firstValue("Retry-After").orElse("")).isNotBlank()
+        assertThat(blocked.headers().firstValue("Access-Control-Allow-Origin").orElse(""))
+            .isEqualTo("https://spend.hokheng.com")
+        assertThat(blocked.headers().firstValue("Access-Control-Expose-Headers").orElse("")).contains("Retry-After")
         assertThat(blocked.body()).contains("\"status\":429")
     }
 
@@ -66,14 +70,16 @@ class DemoRateLimitTest : PostgresIntegrationTest() {
         assertThat(blocked.body()).contains("\"status\":429")
     }
 
-    private fun postSession(): HttpResponse<String> {
-        val request =
+    private fun postSession(origin: String? = null): HttpResponse<String> {
+        val builder =
             HttpRequest
                 .newBuilder(URI.create("http://127.0.0.1:$port/demo/session"))
                 .timeout(Duration.ofSeconds(10))
                 .POST(HttpRequest.BodyPublishers.noBody())
-                .build()
-        return http.send(request, HttpResponse.BodyHandlers.ofString())
+        if (origin != null) {
+            builder.header("Origin", origin)
+        }
+        return http.send(builder.build(), HttpResponse.BodyHandlers.ofString())
     }
 
     private fun getTransactions(token: String): HttpResponse<String> {

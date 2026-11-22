@@ -1,8 +1,10 @@
 package com.hhok.spendrecon.adapters.`in`
 
 import com.hhok.spendrecon.SpendReconProperties
+import org.springframework.boot.web.servlet.FilterRegistrationBean
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.core.Ordered
 import org.springframework.web.cors.CorsConfiguration
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource
 import org.springframework.web.filter.CorsFilter
@@ -20,7 +22,7 @@ class BrowserCorsConfig(
     private val properties: SpendReconProperties,
 ) {
     @Bean
-    fun browserCorsFilter(): CorsFilter {
+    fun browserCorsFilter(): FilterRegistrationBean<CorsFilter> {
         val patterns = properties.cors.allowedOriginPatterns.filter { it.isNotBlank() }
         val cors =
             CorsConfiguration().apply {
@@ -44,6 +46,8 @@ class BrowserCorsConfig(
                     registerCorsConfiguration("/**", cors)
                 }
             }
-        return CorsFilter(source)
+        return FilterRegistrationBean(CorsFilter(source)).apply {
+            order = Ordered.HIGHEST_PRECEDENCE
+        }
     }
 }

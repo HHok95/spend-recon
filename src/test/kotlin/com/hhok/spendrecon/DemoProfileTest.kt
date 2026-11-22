@@ -7,7 +7,12 @@ import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.test.context.ActiveProfiles
 import java.time.Duration
 
-@SpringBootTest(properties = ["recon.api-key=test-key"])
+@SpringBootTest(
+    properties = [
+        "recon.api-key=test-key",
+        "spring.datasource.hikari.data-source-properties.sslmode=disable",
+    ],
+)
 @ActiveProfiles("prod")
 class DemoProdProfileTest : PostgresIntegrationTest() {
     @Autowired

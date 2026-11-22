@@ -14,9 +14,11 @@ import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
+import org.springframework.data.domain.PageRequest
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
+import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 import org.springframework.web.server.ResponseStatusException
 import java.time.LocalDate
@@ -34,8 +36,16 @@ class RecordController(
     private val properties: SpendReconProperties,
 ) {
     @GetMapping("/transactions")
-    @Operation(summary = "List charges for the current tenant")
-    fun listTransactions(): TransactionPage = TransactionPage(transactions.findByTenantIdOrderByCreatedAtAscIdAsc(tenants.id()).map { it.toResponse() })
+    @Operation(summary = "List charges for the current tenant, newest first")
+    fun listTransactions(
+        @RequestParam(required = false) limit: Int?,
+    ): TransactionPage =
+        TransactionPage(
+            transactions
+                .findByTenantIdOrderByCreatedAtDescIdDesc(tenants.id(), PageRequest.of(0, pageSize(limit)))
+                .content
+                .map { it.toResponse() },
+        )
 
     @GetMapping("/transactions/{id}")
     @Operation(summary = "Read one charge in the current tenant")
@@ -63,8 +73,16 @@ class RecordController(
     }
 
     @GetMapping("/documents")
-    @Operation(summary = "List documents for the current tenant")
-    fun listDocuments(): DocumentPage = DocumentPage(documents.findByTenantIdOrderByCreatedAtAscIdAsc(tenants.id()).map { it.toResponse() })
+    @Operation(summary = "List documents for the current tenant, newest first")
+    fun listDocuments(
+        @RequestParam(required = false) limit: Int?,
+    ): DocumentPage =
+        DocumentPage(
+            documents
+                .findByTenantIdOrderByCreatedAtDescIdDesc(tenants.id(), PageRequest.of(0, pageSize(limit)))
+                .content
+                .map { it.toResponse() },
+        )
 
     @GetMapping("/demo/export")
     @Operation(summary = "CSV of APPROVED and MATCHED rows for the current tenant")
@@ -164,12 +182,25 @@ data class DocumentResponse(
 private const val EXPORT_HEADER =
     "matchId,transactionId,documentId,status,score,merchant,amount,currency,txnDate,decidedBy,decidedAt"
 
+private const val DEFAULT_PAGE_SIZE = 50
+private const val MAX_PAGE_SIZE = 200
+private val FORMULA_PREFIX = setOf('=', '+', '-', '@', '\t', '\r')
+
+private fun pageSize(limit: Int?): Int {
+    val requested = limit ?: DEFAULT_PAGE_SIZE
+    if (requested !in 1..MAX_PAGE_SIZE) {
+        throw InvalidRequestException("limit must be from 1 to $MAX_PAGE_SIZE.")
+    }
+    return requested
+}
+
 private fun csv(value: String?): String {
     if (value == null) {
         return ""
     }
-    val escaped = value.replace("\"", "\"\"")
-    return if (escaped.any { it == ',' || it == '"' || it == '\n' || it == '\r' }) "\"$escaped\"" else escaped
+    val guarded = if (value.firstOrNull() in FORMULA_PREFIX) "'$value" else value
+    val escaped = guarded.replace("\"", "\"\"")
+    return if (escaped.any { it == ',' || it == '"' || it == '\n' || it == '\r' || it == '\t' }) "\"$escaped\"" else escaped
 }
 
 private fun decimal(

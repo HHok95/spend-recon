@@ -7,8 +7,6 @@ import java.util.Optional
 import java.util.UUID
 
 interface MatchRepository : JpaRepository<MatchEntity, UUID> {
-    fun existsByTransactionId(transactionId: UUID): Boolean
-
     fun findByTenantId(
         tenantId: UUID,
         pageable: Pageable,

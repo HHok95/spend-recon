@@ -37,6 +37,11 @@ class DemoCleanup(
         if (ids.isEmpty()) {
             return 0
         }
+        // Same order as reconcile: charge, then match, then receipt. Take those
+        // locks before deleting so a live reconcile cannot deadlock with this job.
+        lock("SELECT id FROM card_transactions WHERE tenant_id = ANY (?) ORDER BY id FOR UPDATE", ids)
+        lock("SELECT id FROM matches WHERE tenant_id = ANY (?) ORDER BY id FOR UPDATE", ids)
+        lock("SELECT id FROM documents WHERE tenant_id = ANY (?) ORDER BY id FOR UPDATE", ids)
         delete(
             """
             DELETE FROM reconciliation_events
@@ -58,6 +63,22 @@ class DemoCleanup(
         delete("DELETE FROM demo_sessions WHERE tenant_id = ANY (?)", ids)
         delete("DELETE FROM tenants WHERE id = ANY (?)", ids)
         return ids.size
+    }
+
+    private fun lock(
+        sql: String,
+        ids: List<UUID>,
+    ) {
+        jdbc.execute { connection: Connection ->
+            connection.prepareStatement(sql).use { statement ->
+                statement.setArray(1, connection.createArrayOf("uuid", ids.toTypedArray()))
+                statement.executeQuery().use { rs ->
+                    while (rs.next()) {
+                        rs.getObject("id")
+                    }
+                }
+            }
+        }
     }
 
     private fun delete(
