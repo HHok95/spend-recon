@@ -44,9 +44,8 @@ scalar:
   page-title: spend-recon
 
 # Local default, same idea as the database password in docker-compose.yml.
-# Override with RECON_API_KEY outside this machine.
+# It lives on the non-prod document below so the prod profile cannot fall back to it.
 recon:
-  api-key: ${RECON_API_KEY:local-dev-key}
   idempotency:
     # A second request waits this long for the first transaction to store its response.
     # If the wait expires, the response is 409 and Retry-After is retry-after.
@@ -65,3 +64,46 @@ recon:
     enabled: true
     poll-interval: 1s
     batch-size: 50
+
+# Demo sessions are off unless a profile turns them on. Prod does. Dev only
+# widens the browser allow-list. An empty list allows no browser origin.
+spendrecon:
+  demo:
+    enabled: false
+    session-ttl: 1h
+    cleanup-interval: 1m
+    session-creates-per-hour: 10
+    requests-per-minute: 60
+  cors:
+    allowed-origin-patterns: []
+
+---
+spring:
+  config:
+    activate:
+      on-profile: "!prod"
+recon:
+  api-key: local-dev-key
+
+---
+spring:
+  config:
+    activate:
+      on-profile: prod
+spendrecon:
+  demo:
+    enabled: true
+  cors:
+    allowed-origin-patterns:
+      - https://spend.hokheng.com
+
+---
+spring:
+  config:
+    activate:
+      on-profile: dev
+spendrecon:
+  cors:
+    allowed-origin-patterns:
+      - "http://localhost:*"
+      - "http://127.0.0.1:*"

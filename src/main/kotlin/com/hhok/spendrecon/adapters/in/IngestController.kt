@@ -76,7 +76,10 @@ class IngestController(
             ApiResponse(responseCode = "201", description = "Created, or a replay of the created response."),
             ApiResponse(responseCode = "400", description = "The body is invalid. Amounts are decimal strings."),
             ApiResponse(responseCode = "401", description = "Missing or unknown X-API-Key."),
-            ApiResponse(responseCode = "409", description = "This Idempotency-Key is still in flight."),
+            ApiResponse(
+                responseCode = "409",
+                description = "This Idempotency-Key is still in flight, or this merchant already has this receipt or invoice number.",
+            ),
             ApiResponse(responseCode = "422", description = "This Idempotency-Key was used with a different body."),
         ],
     )
@@ -146,4 +149,10 @@ data class DocumentBodyDoc(
     val docDate: String,
     @field:Schema(requiredMode = Schema.RequiredMode.NOT_REQUIRED, example = "1.12")
     val tax: String? = null,
+    @field:Schema(
+        requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+        description = "Receipt or invoice number. Surrounding whitespace is removed. A blank value is absent. The same number from the same merchant is rejected.",
+        example = "INV-100",
+    )
+    val documentNumber: String? = null,
 )

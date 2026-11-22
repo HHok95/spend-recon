@@ -3,6 +3,7 @@ package com.hhok.spendrecon.application
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.hhok.spendrecon.domain.DocumentKind
 import com.hhok.spendrecon.domain.Money
+import com.hhok.spendrecon.domain.normalizeDocumentNumber
 import com.hhok.spendrecon.domain.normalizeMerchant
 import org.springframework.stereotype.Service
 import java.time.LocalDate
@@ -26,6 +27,8 @@ data class IngestDocumentCommand(
     val amount: Money,
     val tax: Money?,
     val docDate: LocalDate,
+    /** Receipt or invoice number. Null when the document has none. */
+    val documentNumber: String?,
 )
 
 data class TransactionCreatedResponse(
@@ -37,6 +40,11 @@ data class DocumentCreatedResponse(
     val id: UUID,
 )
 
+/** The merchant already has this receipt or invoice number. The HTTP layer answers 409. */
+class DuplicateDocumentException : RuntimeException(
+    "A document with this receipt or invoice number already exists for this merchant.",
+)
+
 interface IngestStore {
     fun insertTransaction(
         command: IngestTransactionCommand,
@@ -46,6 +54,7 @@ interface IngestStore {
     fun insertDocument(
         command: IngestDocumentCommand,
         merchantNorm: String,
+        documentNumberNorm: String?,
     ): UUID
 }
 
@@ -83,7 +92,12 @@ class IngestService(
             endpoint = IdempotencyEndpoints.DOCUMENTS,
             requestHash = requestSha256(rawBody),
         ) {
-            val id = store.insertDocument(command, normalizeMerchant(command.merchantRaw))
+            val id =
+                store.insertDocument(
+                    command,
+                    normalizeMerchant(command.merchantRaw),
+                    normalizeDocumentNumber(command.documentNumber),
+                )
             StoredHttpResponse(
                 status = 201,
                 body = json.writeValueAsString(DocumentCreatedResponse(id)),

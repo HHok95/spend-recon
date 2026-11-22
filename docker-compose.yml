@@ -23,6 +23,7 @@ services:
       SPRING_DATASOURCE_USERNAME: spendrecon
       SPRING_DATASOURCE_PASSWORD: spendrecon
       RECON_API_KEY: local-dev-key
+      SPRING_PROFILES_ACTIVE: dev
     ports:
       - "8080:8080"
 

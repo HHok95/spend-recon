@@ -1,27 +1,32 @@
 package com.hhok.spendrecon.adapters.`in`
 
+import com.hhok.spendrecon.SpendReconProperties
+import org.springframework.boot.web.servlet.FilterRegistrationBean
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.core.Ordered
 import org.springframework.web.cors.CorsConfiguration
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource
 import org.springframework.web.filter.CorsFilter
 
 /**
- * The public demo calls this API from a browser. Reads were already open.
- * Writes still require X-API-Key or the demo session the sandbox will issue.
+ * The only CORS filter. Origins come from `spendrecon.cors.allowed-origin-patterns`.
+ * Prod allows https://spend.hokheng.com. Dev allows local browsers.
+ * An empty list allows no browser origin.
+ *
+ * The page sends Authorization, or X-Demo-Session if that constant changes,
+ * plus Idempotency-Key and Accept. It reads Retry-After.
  */
 @Configuration
-class BrowserCorsConfig {
+class BrowserCorsConfig(
+    private val properties: SpendReconProperties,
+) {
     @Bean
-    fun browserCorsFilter(): CorsFilter {
+    fun browserCorsFilter(): FilterRegistrationBean<CorsFilter> {
+        val patterns = properties.cors.allowedOriginPatterns.filter { it.isNotBlank() }
         val cors =
             CorsConfiguration().apply {
-                allowedOriginPatterns =
-                    listOf(
-                        "https://spend.hokheng.com",
-                        "http://localhost:*",
-                        "http://127.0.0.1:*",
-                    )
+                allowedOriginPatterns = patterns
                 allowedMethods = listOf("GET", "HEAD", "POST", "OPTIONS")
                 allowedHeaders =
                     listOf(
@@ -37,8 +42,12 @@ class BrowserCorsConfig {
             }
         val source =
             UrlBasedCorsConfigurationSource().apply {
-                registerCorsConfiguration("/**", cors)
+                if (patterns.isNotEmpty()) {
+                    registerCorsConfiguration("/**", cors)
+                }
             }
-        return CorsFilter(source)
+        return FilterRegistrationBean(CorsFilter(source)).apply {
+            order = Ordered.HIGHEST_PRECEDENCE
+        }
     }
 }

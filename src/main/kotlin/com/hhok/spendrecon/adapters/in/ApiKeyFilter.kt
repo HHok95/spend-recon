@@ -13,8 +13,9 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
 /**
- * Writes require [ApiHeaders.API_KEY]. Reads stay open: health, metrics, and Scalar
- * are checked by clients that do not send the key.
+ * Writes require [ApiHeaders.API_KEY], unless [DemoSessionFilter] already accepted a
+ * bearer token for this request. The browser sends that token and does not hold the
+ * API key. Reads stay open when demo mode is off.
  */
 @Component
 class ApiKeyFilter(
@@ -22,6 +23,9 @@ class ApiKeyFilter(
     private val json: ObjectMapper,
 ) : OncePerRequestFilter() {
     override fun shouldNotFilter(request: HttpServletRequest): Boolean {
+        if (request.getAttribute(DemoSessionFilter.AUTHENTICATED) == true) {
+            return true
+        }
         if (!request.method.equals("POST", ignoreCase = true)) {
             return true
         }

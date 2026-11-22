@@ -7,21 +7,25 @@ import jakarta.persistence.Entity
 import jakarta.persistence.Table
 import org.hibernate.annotations.JdbcTypeCode
 import org.hibernate.type.SqlTypes
+import com.hhok.spendrecon.Tenants
 import java.io.Serializable
 import java.time.OffsetDateTime
 import java.util.Objects
+import java.util.UUID
 
 @Embeddable
 class IdempotencyKeyId(
+    @Column(name = "tenant_id", nullable = false)
+    var tenantId: UUID = Tenants.LOCAL,
     @Column(name = "key", nullable = false)
     var key: String = "",
     @Column(name = "endpoint", nullable = false)
     var endpoint: String = "",
 ) : Serializable {
     override fun equals(other: Any?): Boolean =
-        other is IdempotencyKeyId && key == other.key && endpoint == other.endpoint
+        other is IdempotencyKeyId && tenantId == other.tenantId && key == other.key && endpoint == other.endpoint
 
-    override fun hashCode(): Int = Objects.hash(key, endpoint)
+    override fun hashCode(): Int = Objects.hash(tenantId, key, endpoint)
 }
 
 /**
