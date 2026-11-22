@@ -1,0 +1,143 @@
+# Postgres 16 for the local kind cluster.
+# This PersistentVolume is a hostPath on the kind node, bound by name to the claim.
+# kind also installs a local-path StorageClass. These manifests do not use it, so
+# the database does not depend on that provisioner.
+# Retain keeps the volume object if the claim is deleted. The files live inside
+# the kind node and disappear when that node container is removed.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: spend-recon-postgres
+  labels:
+    app.kubernetes.io/name: spend-recon
+    app.kubernetes.io/component: postgres
+spec:
+  capacity:
+    storage: 1Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: spend-recon-local
+  hostPath:
+    path: /var/local/spend-recon/postgres
+    type: DirectoryOrCreate
+  claimRef:
+    namespace: spend-recon
+    name: postgres-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  labels:
+    app.kubernetes.io/name: spend-recon
+    app.kubernetes.io/component: postgres
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: spend-recon-local
+  volumeName: spend-recon-postgres
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: spend-recon
+    app.kubernetes.io/component: postgres
+spec:
+  replicas: 1
+  # One ReadWriteOnce volume. A rolling update would try to mount it twice.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spend-recon
+      app.kubernetes.io/component: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spend-recon
+        app.kubernetes.io/component: postgres
+    spec:
+      # postgres:16-alpine's default user is root. The entrypoint creates PGDATA,
+      # chowns it to uid 70 and gid 70, then starts the server as that user.
+      # fsGroup has no effect on hostPath. The kubelet does not apply it there.
+      securityContext:
+        fsGroup: 70
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: spend-recon-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: spend-recon-config
+                  key: POSTGRES_USER
+            - name: PGDATA
+              valueFrom:
+                configMapKeyRef:
+                  name: spend-recon-config
+                  key: PGDATA
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: spend-recon-local
+                  key: POSTGRES_PASSWORD
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "spendrecon", "-d", "spendrecon"]
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "spendrecon", "-d", "spendrecon"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: spend-recon
+    app.kubernetes.io/component: postgres
+spec:
+  selector:
+    app.kubernetes.io/name: spend-recon
+    app.kubernetes.io/component: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

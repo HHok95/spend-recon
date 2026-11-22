@@ -1,0 +1,155 @@
+# Non-secret settings for the local cluster. Credentials are in spend-recon-local.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spend-recon-config
+  labels:
+    app.kubernetes.io/name: spend-recon
+data:
+  POSTGRES_DB: spendrecon
+  POSTGRES_USER: spendrecon
+  # Subdirectory so an empty volume mount can be initialized by the image entrypoint.
+  PGDATA: /var/lib/postgresql/data/pgdata
+  SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/spendrecon
+  SPRING_DATASOURCE_USERNAME: spendrecon
+  # Keep the heap inside the pod memory limit. The JVM reads this without a custom entrypoint.
+  JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0"
+  # Readiness stays down while Postgres is unreachable. Liveness stays the process check.
+  MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE: readinessState,db
+---
+# Local development placeholders. Same values as docker-compose.yml.
+# Not a real password and not a real API key. Do not copy this Secret into a shared cluster.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: spend-recon-local
+  labels:
+    app.kubernetes.io/name: spend-recon
+  annotations:
+    spend-recon.dev/credential-source: docker-compose-local-defaults
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: spendrecon
+  SPRING_DATASOURCE_PASSWORD: spendrecon
+  RECON_API_KEY: local-dev-key
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spend-recon
+  labels:
+    app.kubernetes.io/name: spend-recon
+    app.kubernetes.io/component: api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spend-recon
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spend-recon
+        app.kubernetes.io/component: api
+    spec:
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - until pg_isready -h postgres -p 5432; do echo waiting for postgres; sleep 2; done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      containers:
+        - name: app
+          # Built and loaded by scripts/kind-up.sh. There is no registry.
+          image: spend-recon:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: SPRING_DATASOURCE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: spend-recon-config
+                  key: SPRING_DATASOURCE_URL
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                configMapKeyRef:
+                  name: spend-recon-config
+                  key: SPRING_DATASOURCE_USERNAME
+            - name: JAVA_TOOL_OPTIONS
+              valueFrom:
+                configMapKeyRef:
+                  name: spend-recon-config
+                  key: JAVA_TOOL_OPTIONS
+            - name: MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE
+              valueFrom:
+                configMapKeyRef:
+                  name: spend-recon-config
+                  key: MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: spend-recon-local
+                  key: SPRING_DATASOURCE_PASSWORD
+            - name: RECON_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: spend-recon-local
+                  key: RECON_API_KEY
+          # Flyway runs inside this process before the HTTP port opens,
+          # because spring.flyway.enabled is true in the image. Same as Compose.
+          # The startup probe gives that boot time. Liveness does not restart a slow first start.
+          startupProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 36
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 384Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spend-recon
+  labels:
+    app.kubernetes.io/name: spend-recon
+    app.kubernetes.io/component: api
+spec:
+  selector:
+    app.kubernetes.io/name: spend-recon
+    app.kubernetes.io/component: api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

@@ -1,6 +1,6 @@
 ---
 name: verify-spend-recon
-description: Verify the spend-recon HTTP API (health, Prometheus, Scalar at /scalar, the Flyway schema, the append-only audit table, ingest with idempotency, reconcile with auto-approve, exceptions, and match history, approve and reject with the outbox poller, and the local Grafana dashboard) against the Docker Compose stack. Use after a change to those routes.
+description: Verify the spend-recon HTTP API (health, Prometheus, Scalar at /scalar, the Flyway schema, the append-only audit table, ingest with idempotency, reconcile with auto-approve, exceptions, and match history, approve and reject with the outbox poller, and the local Grafana dashboard) against the Docker Compose stack. Also drive the local kind cluster with `drive kind`. Use after a change to those routes or to the kind manifests.
 ---
 
 # Verify spend-recon
@@ -68,9 +68,21 @@ Follow `features/README.md`, then one feature file. The built commands are:
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive reconcile
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive decisions
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive grafana
+.cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive kind
 ```
 
 `drive scalar` is the API reference check: `GET /scalar` returns the Scalar page pointed at `/v3/api-docs`, and `GET /swagger-ui/index.html` returns 404. `drive ingest` posts transactions and documents with `X-API-Key: local-dev-key`. `drive reconcile` posts a charge and a receipt, reconciles them to an auto-approved match, then checks a `NO_CANDIDATE` exception, an `AMOUNT_MISMATCH` that holds its receipt, and `GET /matches/{id}/history`. `drive decisions` approves a suggestion, rejects another match, checks a stale version and an exception reason, and waits until the outbox poller sets `published_at`. `drive grafana` checks that Prometheus reports the app target UP and that the provisioned Grafana dashboard returns `idempotent_replays_total`. `POST /matches/{id}/suggest` is listed in the map and must not be reported as verified.
+
+## Kind
+
+`drive kind` does not use Compose, `launch`, or `doctor`. The cluster name comes from `SPEND_RECON_KIND_CLUSTER` (default `spend-recon`). It deletes that cluster only when a node has the label `spend-recon.io/created-by=kind-up.sh`. A cluster without that label stops the drive and is left in place. It then creates the cluster, builds the image, loads it into the node, applies `k8s/`, and port-forwards the API to `http://127.0.0.1:8080`. It checks health, liveness, and readiness, posts one charge and one matching receipt, reconciles them to `APPROVED`, checks that Flyway applied every migration, and deletes the cluster. Prometheus and Grafana are not in this cluster.
+
+```bash
+export RUN_ID=kind1
+.cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive kind
+```
+
+Host port `8080` must be free. Docker, `kind` 0.24.0 or newer, and `kubectl` must be on `PATH`. The drive deletes the cluster when a check fails, and only if `kind-up.sh` labeled it. kubectl calls pass `--context kind-<cluster>` and do not change the current context.
 
 ## Evidence
 
@@ -109,6 +121,7 @@ export RUN_ID=proof1
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive reconcile
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive decisions
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive grafana
+.cursor/skills/verify-spend-recon/scripts/spend-recon-verify drive kind
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify evidence
 .cursor/skills/verify-spend-recon/scripts/spend-recon-verify cleanup
 ```

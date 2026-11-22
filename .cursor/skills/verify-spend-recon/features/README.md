@@ -52,6 +52,7 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Reconcile](./reconcile.md) covers `POST /reconcile/{txnId}`, auto-approve, `NO_CANDIDATE`, `AMOUNT_MISMATCH`, a receipt held by another live match, and `GET /matches/{id}/history`.
 - [Approve and reject](./decisions.md) covers `POST /matches/{id}/approve`, `POST /matches/{id}/reject`, a stale version, an exception override reason, a freed receipt, and outbox publishing.
 - [Grafana dashboard](./grafana.md) covers the Prometheus target for the app, the provisioned dashboard, and `idempotent_replays_total` on that dashboard.
+- [Kind cluster](./kind.md) covers a local kind cluster: health, one auto-approved reconcile, and Flyway. It does not use `launch` or `doctor`. Prometheus and Grafana stay on Compose.
 
 ## Planned features
 
