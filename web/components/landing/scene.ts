@@ -4,6 +4,8 @@ import {
   DirectionalLight,
   Group,
   HemisphereLight,
+  LinearFilter,
+  LinearMipmapLinearFilter,
   Mesh,
   MeshBasicMaterial,
   MeshPhysicalMaterial,
@@ -117,8 +119,11 @@ export async function mountScene(canvas: HTMLCanvasElement): Promise<SceneHandle
   renderer.toneMapping = ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.05;
   renderer.setClearColor(0x000000, 0);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
-  const aniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  // Cap at 2. After 60 frames, a median over 20ms steps down to 1.5 once.
+  let ratioCap = 2;
+  const pixelRatio = () => Math.min(window.devicePixelRatio || 1, ratioCap);
+  renderer.setPixelRatio(pixelRatio());
+  const aniso = renderer.capabilities.getMaxAnisotropy();
 
   const scene = new Scene();
   const pmrem = new PMREMGenerator(renderer);
@@ -157,11 +162,13 @@ export async function mountScene(canvas: HTMLCanvasElement): Promise<SceneHandle
     return [el, ctx] as const;
   };
   const textures: CanvasTexture[] = [];
-  const texture = (source: HTMLCanvasElement, flip = true) => {
+  const texture = (source: HTMLCanvasElement, flip = true, mipmaps = false) => {
     const map = new CanvasTexture(source);
     map.colorSpace = SRGBColorSpace;
     map.flipY = flip;
     map.anisotropy = aniso;
+    map.generateMipmaps = mipmaps;
+    map.minFilter = mipmaps ? LinearMipmapLinearFilter : LinearFilter;
     textures.push(map);
     return map;
   };
@@ -175,20 +182,24 @@ export async function mountScene(canvas: HTMLCanvasElement): Promise<SceneHandle
     wm: number,
     hm: number,
     draw: (ctx: CanvasRenderingContext2D, width: number, height: number) => void,
-    options: { r?: number; bg?: string; line?: string | null; px?: number } = {},
+    options: { r?: number; bg?: string; line?: string | null; px?: number; sample?: number } = {},
   ) => {
     const px = options.px ?? 5600;
-    const [el, ctx] = canvasOf(Math.max(2, Math.round(wm * px)), Math.max(2, Math.round(hm * px)));
+    const sample = options.sample ?? 1;
+    const baseW = Math.max(2, Math.round(wm * px));
+    const baseH = Math.max(2, Math.round(hm * px));
+    const [el, ctx] = canvasOf(Math.max(2, Math.round(baseW * sample)), Math.max(2, Math.round(baseH * sample)));
+    ctx.setTransform(el.width / baseW, 0, 0, el.height / baseH, 0, 0);
     ctx.fillStyle = options.bg ?? C.ui;
     ctx.beginPath();
-    ctx.roundRect(2, 2, el.width - 4, el.height - 4, options.r ?? 28);
+    ctx.roundRect(2, 2, baseW - 4, baseH - 4, options.r ?? 28);
     ctx.fill();
     if (options.line !== null) {
       ctx.strokeStyle = options.line ?? C.uiLine;
       ctx.lineWidth = 3;
       ctx.stroke();
     }
-    draw(ctx, el.width, el.height);
+    draw(ctx, baseW, baseH);
     return new Mesh(
       new PlaneGeometry(wm, hm),
       new MeshBasicMaterial({ map: texture(el), transparent: true, toneMapped: false }),
@@ -210,12 +221,13 @@ export async function mountScene(canvas: HTMLCanvasElement): Promise<SceneHandle
             clearcoatRoughness: 0.2,
           });
   });
-  const [faceCanvas, faceCtx] = canvasOf(856, 540);
+  const [faceCanvas, faceCtx] = canvasOf(1712, 1080);
+  faceCtx.scale(2, 2);
   text(faceCtx, "HokWallet", 56, 120, { w: 600, size: 76, col: "#eef1f5" });
   text(faceCtx, "•• 4417", 56, 470, { f: mono, w: 500, size: 66, col: "#eef1f5" });
   const face = new Mesh(
     new PlaneGeometry(0.0856, 0.054),
-    new MeshBasicMaterial({ map: texture(faceCanvas), transparent: true, toneMapped: false, opacity: 0.92 }),
+    new MeshBasicMaterial({ map: texture(faceCanvas), transparent: true, toneMapped: false, opacity: 1 }),
   );
   face.rotation.x = -Math.PI / 2;
   face.position.y = 0.00045;
@@ -288,7 +300,7 @@ export async function mountScene(canvas: HTMLCanvasElement): Promise<SceneHandle
     text(ctx, "Woolworths · tax 4.98 · 2026-01-06", 120, 146, { f: mono, size: 23, col: C.fg2 });
     text(ctx, "POST /transactions → 201", 120, 190, { f: mono, size: 24 });
     text(ctx, "status UNMATCHED", 120, 228, { f: mono, w: 600, size: 24, col: C.fg2 });
-  }, { r: 36, bg: "#2e343d" });
+  }, { r: 36, bg: "#2e343d", sample: 2 });
   const noteX = 0.042;
   note.scale.setScalar(0.85);
   note.position.set(noteX, 0.045, 0.03);
@@ -384,11 +396,56 @@ export async function mountScene(canvas: HTMLCanvasElement): Promise<SceneHandle
   let painted = false;
   let rowState = false;
   let disposed = false;
+  let ratioDecided = false;
+  let lastFrame = 0;
+  let watch = 0;
+  let renderedInUpdate = false;
+  const frameTimes: number[] = [];
+
+  const settleRatio = () => {
+    if (ratioDecided) return;
+    ratioDecided = true;
+    if (watch) cancelAnimationFrame(watch);
+    watch = 0;
+    const sorted = frameTimes.slice().sort((a, b) => a - b);
+    const mid = sorted.length >> 1;
+    const median = sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+    const fallback = Math.min(window.devicePixelRatio || 1, 1.5);
+    surface.dataset.frameMs = median.toFixed(1);
+    if (median > 20 && renderer.getPixelRatio() > fallback + 0.001) {
+      ratioCap = 1.5;
+      renderer.setPixelRatio(pixelRatio());
+      renderer.setSize(width, height, false);
+      dirty = true;
+      renderer.render(scene, camera);
+    }
+    surface.dataset.pixelRatio = String(renderer.getPixelRatio());
+  };
+
+  const noteFrame = (now: number) => {
+    if (ratioDecided || disposed) return;
+    if (lastFrame !== 0) frameTimes.push(now - lastFrame);
+    lastFrame = now;
+    if (frameTimes.length >= 60) settleRatio();
+  };
+
+  const watchFrame = (now: number) => {
+    if (disposed || ratioDecided) return;
+    if (renderedInUpdate) {
+      renderedInUpdate = false;
+      watch = requestAnimationFrame(watchFrame);
+      return;
+    }
+    noteFrame(now);
+    if (ratioDecided) return;
+    renderer.render(scene, camera);
+    watch = requestAnimationFrame(watchFrame);
+  };
 
   const resize = () => {
     width = surface.clientWidth || window.innerWidth;
     height = surface.clientHeight || window.innerHeight;
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    renderer.setPixelRatio(pixelRatio());
     renderer.setSize(width, height, false);
     dirty = true;
   };
@@ -475,11 +532,17 @@ export async function mountScene(canvas: HTMLCanvasElement): Promise<SceneHandle
 
   const update = (sd: number) => {
     if (disposed) return painted;
-    if (!dirty && Math.abs(sd - lastSd) < 0.00005) return painted;
+    if (!dirty && Math.abs(sd - lastSd) < 0.00005) {
+      if (watch === 0 && !ratioDecided) watch = requestAnimationFrame(watchFrame);
+      return painted;
+    }
     lastSd = sd;
     dirty = false;
     apply(sd);
     renderer.render(scene, camera);
+    renderedInUpdate = true;
+    noteFrame(performance.now());
+    if (watch === 0 && !ratioDecided) watch = requestAnimationFrame(watchFrame);
     if (!painted) {
       painted = true;
       const draws = renderer.info.render.calls;
@@ -494,6 +557,8 @@ export async function mountScene(canvas: HTMLCanvasElement): Promise<SceneHandle
   const dispose = () => {
     if (disposed) return;
     disposed = true;
+    ratioDecided = true;
+    if (watch) cancelAnimationFrame(watch);
     scene.environment?.dispose();
     scene.traverse((object) => {
       if (!isMesh(object)) return;
@@ -572,7 +637,7 @@ export async function mountScene(canvas: HTMLCanvasElement): Promise<SceneHandle
         size: 26,
         col: color,
       });
-    }, { r: 14, bg: win ? "#22332c" : "#2a2b30", line: win ? "#3f7a5e" : "#4a3634", px: 4000 });
+    }, { r: 14, bg: win ? "#22332c" : "#2a2b30", line: win ? "#3f7a5e" : "#4a3634", px: 4000, sample: 1.5 });
     const map = (mesh.material as MeshBasicMaterial).map as Texture;
     mesh.geometry.dispose();
     (mesh.material as Material).dispose();
