@@ -10,11 +10,13 @@ fun problemJson(
     json: ObjectMapper,
     status: HttpStatus,
     detail: String,
+    type: String = "about:blank",
+    title: String = status.reasonPhrase,
 ): String =
     json.writeValueAsString(
         linkedMapOf(
-            "type" to "about:blank",
-            "title" to status.reasonPhrase,
+            "type" to type,
+            "title" to title,
             "status" to status.value(),
             "detail" to detail,
         ),
@@ -24,8 +26,10 @@ fun problemResponse(
     json: ObjectMapper,
     status: HttpStatus,
     detail: String,
+    type: String = "about:blank",
+    title: String = status.reasonPhrase,
 ): ResponseEntity<String> =
     ResponseEntity
         .status(status)
         .contentType(MediaType.APPLICATION_PROBLEM_JSON)
-        .body(problemJson(json, status, detail))
+        .body(problemJson(json, status, detail, type, title))

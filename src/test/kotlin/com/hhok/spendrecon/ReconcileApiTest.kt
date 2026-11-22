@@ -370,7 +370,8 @@ class ReconcileApiTest : PostgresIntegrationTest() {
     @Test
     fun `a tie is suggested and a bill is not a candidate`() {
         val owner = uniqueOwner()
-        createDocument(owner, amount = "7.00", tax = "0.70", merchant = "Same")
+        // One day apart, so the scores tie and the receipts are not a same-day near-match.
+        createDocument(owner, amount = "7.00", tax = "0.70", merchant = "Same", date = "2026-11-22")
         createDocument(owner, amount = "7.00", tax = "0.70", merchant = "Same")
         val txn = createTransaction(owner, amount = "7.00", tax = "0.70", merchant = "Same")
         val body = json.readTree(reconcile(txn).body)
@@ -408,8 +409,9 @@ class ReconcileApiTest : PostgresIntegrationTest() {
         amount: String,
         tax: String?,
         kind: String = "RECEIPT",
+        date: String = "2026-11-21",
     ): String {
-        val response = post("/documents", uniqueKey(), documentJson(owner, merchant, amount, tax, kind))
+        val response = post("/documents", uniqueKey(), documentJson(owner, merchant, amount, tax, kind, date))
         assertThat(response.status).isEqualTo(201)
         return json.readTree(response.body)["id"].asText()
     }
@@ -569,9 +571,10 @@ class ReconcileApiTest : PostgresIntegrationTest() {
         amount: String,
         tax: String?,
         kind: String,
+        date: String = "2026-11-21",
     ): String {
         val taxJson = if (tax == null) "" else ""","tax":"$tax""""
-        return """{"kind":"$kind","cardOwnerId":"$owner","merchant":"$merchant","amount":"$amount","currency":"AUD","docDate":"2026-11-21"$taxJson}"""
+        return """{"kind":"$kind","cardOwnerId":"$owner","merchant":"$merchant","amount":"$amount","currency":"AUD","docDate":"$date"$taxJson}"""
     }
 
     private fun uniqueOwner(): String = "owner-${UUID.randomUUID()}"

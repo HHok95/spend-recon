@@ -26,6 +26,8 @@ data class IngestDocumentCommand(
     val amount: Money,
     val tax: Money?,
     val docDate: LocalDate,
+    /** Receipt or invoice number. Null when the document has none. */
+    val documentNumber: String?,
 )
 
 data class TransactionCreatedResponse(
@@ -35,6 +37,11 @@ data class TransactionCreatedResponse(
 
 data class DocumentCreatedResponse(
     val id: UUID,
+)
+
+/** The merchant already has this receipt or invoice number. The HTTP layer answers 409. */
+class DuplicateDocumentException : RuntimeException(
+    "A document with this receipt or invoice number already exists for this merchant.",
 )
 
 interface IngestStore {

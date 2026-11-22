@@ -130,6 +130,29 @@ class FlywayMigrationTest : PostgresIntegrationTest() {
     }
 
     @Test
+    fun `a receipt number is unique per merchant after trim and case fold`() {
+        val indexDef =
+            jdbc.queryForObject(
+                "SELECT indexdef FROM pg_indexes WHERE indexname = 'documents_merchant_document_number'",
+                String::class.java,
+            )
+        assertThat(indexDef).contains("UNIQUE").contains("merchant_norm").contains("lower").contains("btrim")
+        assertThat(indexDef).contains("IS NOT NULL")
+
+        insertDocument(UUID.randomUUID(), number = "INV-100")
+        assertThatThrownBy {
+            insertDocument(UUID.randomUUID(), number = " inv-100 ")
+        }.hasMessageContaining("documents_merchant_document_number")
+
+        insertDocument(UUID.randomUUID(), number = null)
+        insertDocument(UUID.randomUUID(), number = null)
+        insertDocument(UUID.randomUUID(), number = "")
+        insertDocument(UUID.randomUUID(), number = "   ")
+        insertDocument(UUID.randomUUID(), merchantNorm = "other", number = "INV-100")
+        insertDocument(UUID.randomUUID(), number = "INV-101")
+    }
+
+    @Test
     fun `only one live match is allowed per document`() {
         val firstTransaction = UUID.randomUUID()
         val secondTransaction = UUID.randomUUID()
@@ -217,15 +240,21 @@ class FlywayMigrationTest : PostgresIntegrationTest() {
         )
     }
 
-    private fun insertDocument(id: UUID) {
+    private fun insertDocument(
+        id: UUID,
+        merchantNorm: String = "cafe",
+        number: String? = null,
+    ) {
         jdbc.update(
             """
             INSERT INTO documents (
                 id, kind, card_owner_id, merchant_raw, merchant_norm,
-                amount_minor, currency, doc_date
-            ) VALUES (?, 'RECEIPT', 'owner-1', 'Cafe', 'cafe', 1234, 'AUD', DATE '2026-11-21')
+                amount_minor, currency, doc_date, document_number
+            ) VALUES (?, 'RECEIPT', 'owner-1', 'Cafe', ?, 1234, 'AUD', DATE '2026-11-21', ?)
             """.trimIndent(),
             id,
+            merchantNorm,
+            number,
         )
     }
 }

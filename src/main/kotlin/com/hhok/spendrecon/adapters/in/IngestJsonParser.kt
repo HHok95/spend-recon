@@ -45,6 +45,7 @@ class IngestJsonParser(
             amount = requiredMoney(node, "amount", currency),
             tax = optionalMoney(node, currency),
             docDate = requiredDate(node, "docDate"),
+            documentNumber = optionalDocumentNumber(node),
         )
     }
 
@@ -155,6 +156,15 @@ class IngestJsonParser(
         return textual(node.get(field), field)
     }
 
+    /** Blank is absent. A missing number is not part of the exact duplicate key. */
+    private fun optionalDocumentNumber(node: ObjectNode): String? {
+        val number = optionalString(node, "documentNumber") ?: return null
+        if (number.isEmpty()) {
+            return null
+        }
+        return number
+    }
+
     private fun optionalString(
         node: ObjectNode,
         field: String,
@@ -179,6 +189,6 @@ class IngestJsonParser(
         private val TRANSACTION_FIELDS =
             setOf("cardOwnerId", "merchant", "amount", "currency", "txnDate", "tax")
         private val DOCUMENT_FIELDS =
-            setOf("kind", "cardOwnerId", "merchant", "amount", "currency", "docDate", "tax")
+            setOf("kind", "cardOwnerId", "merchant", "amount", "currency", "docDate", "tax", "documentNumber")
     }
 }
