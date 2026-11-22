@@ -22,7 +22,10 @@ export function Landing({ fontClass }: { fontClass: string }) {
     <div className={`landing ${fontClass}`} data-landing="">
       <Scroller />
       <header className="top">
-        <span className="word">Hok Heng · Software Engineer</span>
+        <span className="word">
+          <span className="word-full">Hok Heng · Software Engineer</span>
+          <span className="word-short">Hok Heng</span>
+        </span>
         <nav aria-label="Site">
           <a href={REPO} target="_blank" rel="noopener noreferrer">
             GitHub
@@ -98,6 +101,9 @@ export function Landing({ fontClass }: { fontClass: string }) {
                 <span>
                   POST /transactions · <b>201</b>
                 </span>
+                <span className="dot" aria-hidden="true">
+                  ·
+                </span>
                 <span>UNMATCHED</span>
               </p>
               <p className="tag reveal" data-reveal="4">
@@ -127,8 +133,14 @@ export function Landing({ fontClass }: { fontClass: string }) {
                   <i aria-hidden="true" />
                   MATCHED
                 </span>
+                <span className="dot" aria-hidden="true">
+                  ·
+                </span>
                 <span>
                   <b>1.000</b> ≥ 0.850
+                </span>
+                <span className="dot" aria-hidden="true">
+                  ·
                 </span>
                 <span>no tie</span>
               </p>
@@ -158,8 +170,14 @@ export function Landing({ fontClass }: { fontClass: string }) {
                 <span className="ok">
                   <i aria-hidden="true" />1 × 200
                 </span>
+                <span className="dot" aria-hidden="true">
+                  ·
+                </span>
                 <span className="bad">
                   <i aria-hidden="true" />9 × 409
+                </span>
+                <span className="dot" aria-hidden="true">
+                  ·
                 </span>
                 <span className="quiet">Retry-After: 1 if the row is busy</span>
               </p>
@@ -187,7 +205,13 @@ export function Landing({ fontClass }: { fontClass: string }) {
                   <i aria-hidden="true" />
                   EXCEPTION
                 </span>
+                <span className="dot" aria-hidden="true">
+                  ·
+                </span>
                 <span>R7_DUPLICATE</span>
+                <span className="dot" aria-hidden="true">
+                  ·
+                </span>
                 <span>reason required</span>
               </p>
               <p className="tag reveal" data-reveal="4">

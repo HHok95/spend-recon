@@ -20,12 +20,19 @@ const POSES: Pose[] = [
   { px: 0, py: 0, pz: 0, rx: 62, ry: -28, rz: 14, scale: 1, tx: 0, ty: 0, tz: 0, dist: 0.235, az: 18, el: 14, sx: 0.2 },
   { px: -0.03, py: 0, pz: 0, rx: 74, ry: -16, rz: 8, scale: 1, tx: 0.025, ty: 0.025, tz: 0, dist: 0.36, az: 8, el: 10, sx: 0.17 },
   { px: 0.17, py: 0.2, pz: 0.064, rx: 90, ry: -12, rz: 0, scale: 1, tx: 0.085, ty: 0.13, tz: 0.06, dist: 0.7, az: 0, el: 2, sx: 0.22 },
-  { px: -0.045, py: -0.024, pz: 0.02, rx: 90, ry: -4, rz: -9, scale: 0.62, tx: 0, ty: 0.01, tz: 0, dist: 0.64, az: -12, el: 6, sx: 0.22 },
+  { px: -0.126, py: -0.024, pz: 0.026, rx: 90, ry: -4, rz: -9, scale: 0.806, tx: 0, ty: 0.01, tz: 0, dist: 0.64, az: -12, el: 6, sx: 0.22 },
   { px: -0.05, py: 0.03, pz: 0.03, rx: 90, ry: 34, rz: 6, scale: 0.8, tx: 0.03, ty: 0.03, tz: 0, dist: 0.52, az: 6, el: 6, sx: 0.2 },
   { px: -0.03, py: 0.002, pz: 0.06, rx: 90, ry: 24, rz: -6, scale: 1, tx: 0.03, ty: 0.05, tz: 0, dist: 0.55, az: 10, el: 8, sx: 0.2 },
 ];
 
-/** s where each rest pose has fully arrived, then holds. */
+/**
+ * s where each rest pose has fully arrived, then holds.
+ * Section 2 lists 2.55 and 3.5 for beats 3 and 4. Those sits are at or past
+ * the end of the sticky window: a 200vh section only pins its 100vh copy while
+ * local progress is under 0.5, so s = k + 0.5 is the last frame where the copy
+ * still fills the viewport. Arriving at 2.4 and 3.4 settles the pose while that
+ * copy is still stuck, which is the storyboard frame.
+ */
 const ARRIVE = [0, 1.3, 2.4, 3.4, 4.3, 5];
 
 export type Sample = {

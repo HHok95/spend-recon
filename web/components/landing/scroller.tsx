@@ -19,6 +19,8 @@ export function Scroller() {
     let disposed = false;
     let starting = false;
     let raf = 0;
+    let idleId = 0;
+    let timeoutId = 0;
     let running = false;
     let s = 0;
     let sd = 0;
@@ -135,9 +137,22 @@ export function Scroller() {
     };
 
     const schedule = () => {
+      if (idleId) window.cancelIdleCallback(idleId);
+      window.clearTimeout(timeoutId);
+      idleId = 0;
+      timeoutId = 0;
       const idle = window.requestIdleCallback;
-      if (idle) idle(() => begin(), { timeout: 1500 });
-      else window.setTimeout(begin, 1);
+      if (idle) {
+        idleId = idle(() => {
+          idleId = 0;
+          begin();
+        }, { timeout: 1500 });
+      } else {
+        timeoutId = window.setTimeout(() => {
+          timeoutId = 0;
+          begin();
+        }, 1);
+      }
     };
 
     const onResize = () => {
@@ -171,6 +186,8 @@ export function Scroller() {
     return () => {
       disposed = true;
       window.cancelAnimationFrame(raf);
+      if (idleId) window.cancelIdleCallback(idleId);
+      window.clearTimeout(timeoutId);
       window.removeEventListener("scroll", kick);
       window.removeEventListener("resize", onResize);
       window.removeEventListener("load", schedule);

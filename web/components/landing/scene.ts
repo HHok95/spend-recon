@@ -141,11 +141,13 @@ export async function mountScene(canvas: HTMLCanvasElement): Promise<SceneHandle
     if (!ctx) throw new Error("2d");
     return [el, ctx] as const;
   };
+  const textures: CanvasTexture[] = [];
   const texture = (source: HTMLCanvasElement, flip = true) => {
     const map = new CanvasTexture(source);
     map.colorSpace = SRGBColorSpace;
     map.flipY = flip;
     map.anisotropy = aniso;
+    textures.push(map);
     return map;
   };
   const text = (ctx: CanvasRenderingContext2D, value: string, x: number, y: number, options: Draw = {}) => {
@@ -272,7 +274,9 @@ export async function mountScene(canvas: HTMLCanvasElement): Promise<SceneHandle
     text(ctx, "POST /transactions → 201", 120, 190, { f: mono, size: 24 });
     text(ctx, "status UNMATCHED", 120, 228, { f: mono, w: 600, size: 24, col: C.fg2 });
   }, { r: 36, bg: "#2e343d" });
-  note.position.set(0.05, 0.045, 0.03);
+  const noteX = 0.042;
+  note.scale.setScalar(0.85);
+  note.position.set(noteX, 0.045, 0.03);
   note.rotation.y = deg(-10);
 
   const header = panel(0.26, 0.02, (ctx) => {
@@ -402,7 +406,7 @@ export async function mountScene(canvas: HTMLCanvasElement): Promise<SceneHandle
       group.visible = fade > 0.02;
       if (beat === 1) {
         const slide = smoother(clamp(enter / 0.7, 0, 1));
-        note.position.x = 0.05 + 0.024 * (1 - slide);
+        note.position.x = noteX + 0.024 * (1 - slide);
         fadeObject(note, fade * slide);
       } else if (beat === 2) {
         const dim = smoother(clamp(enter / 0.28, 0, 1));
@@ -479,13 +483,11 @@ export async function mountScene(canvas: HTMLCanvasElement): Promise<SceneHandle
     scene.traverse((object) => {
       if (!isMesh(object)) return;
       object.geometry.dispose();
-      materials(object).forEach((material) => {
-        const map = (material as MeshBasicMaterial).map;
-        if (map) map.dispose();
-        material.dispose();
-      });
+      materials(object).forEach((material) => material.dispose());
     });
+    textures.forEach((map) => map.dispose());
     renderer.dispose();
+    renderer.getContext().getExtension("WEBGL_lose_context")?.loseContext();
     room.removeFromParent();
   };
 

@@ -23,7 +23,21 @@
   overflow-x: clip;
 }
 
+html:has(.landing),
 body:has(.landing) {
+  color-scheme: dark;
+  --bg: oklch(0.225 0.009 255);
+  --panel: oklch(0.255 0.01 255);
+  --raised: oklch(0.29 0.011 255);
+  --line: oklch(0.36 0.012 255);
+  --line2: oklch(0.31 0.011 255);
+  --fg: oklch(0.95 0.004 255);
+  --fg2: oklch(0.8 0.012 255);
+  --fg3: oklch(0.7 0.012 255);
+  --amber: oklch(0.82 0.12 78);
+  --amberink: oklch(0.24 0.035 70);
+  --mint: oklch(0.79 0.13 158);
+  --coral: oklch(0.74 0.15 25);
   background: var(--bg);
   color: var(--fg);
 }
@@ -56,6 +70,10 @@ body:has(.landing) {
 .word {
   color: var(--fg);
   font-weight: 500;
+}
+
+.word-short {
+  display: none;
 }
 
 .top nav {
@@ -181,6 +199,7 @@ body:has(.landing) {
   font-weight: 600;
   letter-spacing: -0.03em;
   line-height: 62px;
+  text-wrap: balance;
 }
 
 .landing h2 {
@@ -188,6 +207,7 @@ body:has(.landing) {
   font-weight: 600;
   letter-spacing: -0.025em;
   line-height: 48px;
+  text-wrap: balance;
 }
 
 .landing .lede {
@@ -209,7 +229,8 @@ body:has(.landing) {
 .landing .fact {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 18px;
+  align-items: baseline;
+  gap: 0.35em;
   margin-top: 22px;
   color: var(--fg);
   font-size: 14px;
@@ -254,9 +275,10 @@ body:has(.landing) {
 
 .log {
   display: grid;
-  gap: 18px;
+  gap: 0;
   margin-top: 28px;
   padding: 0;
+  border-top: 1px solid var(--line2);
   list-style: none;
   font-size: 14px;
   line-height: 20px;
@@ -267,6 +289,8 @@ body:has(.landing) {
   grid-template-columns: 6.4rem 9.6rem max-content;
   gap: 12px;
   align-items: baseline;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line2);
   white-space: nowrap;
 }
 
@@ -295,7 +319,7 @@ body:has(.landing) {
   margin-top: 28px;
 }
 
-.btn {
+.landing a.btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -310,14 +334,18 @@ body:has(.landing) {
   text-decoration: none;
 }
 
-.actions .link {
+.landing .actions .link {
   display: inline-flex;
   align-items: center;
   min-height: 44px;
   color: var(--fg2);
   font-size: 17px;
-  text-decoration: none;
+  text-decoration: underline;
   text-underline-offset: 4px;
+}
+
+.log + .reveal .actions {
+  margin-top: 32px;
 }
 
 .landing .footnote {
@@ -325,11 +353,11 @@ body:has(.landing) {
   z-index: 4;
   bottom: 18px;
   left: var(--gut);
-  max-width: min(1040px, calc(100vw - 2 * var(--gut)));
+  max-width: min(1180px, calc(100vw - 2 * var(--gut)));
   margin: 0;
   color: var(--fg3);
   font-size: 12px;
-  line-height: 16px;
+  line-height: 17px;
   pointer-events: none;
 }
 
@@ -412,7 +440,27 @@ body:has(.landing) {
 
   .top {
     height: 56px;
-    padding: 0 12px 0 20px;
+    padding: 0 8px 0 20px;
+  }
+
+  .word-full {
+    display: none;
+  }
+
+  .word-short {
+    display: inline;
+  }
+
+  .top nav {
+    gap: 0;
+    flex-shrink: 0;
+  }
+
+  .top a {
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 12px;
   }
 
   .landing main {
@@ -482,12 +530,8 @@ body:has(.landing) {
     justify-content: center;
   }
 
-  .log .item {
-    display: none;
-  }
-
   .log li {
-    grid-template-columns: auto 1fr;
+    grid-template-columns: auto auto minmax(0, 1fr);
     white-space: normal;
   }
 
