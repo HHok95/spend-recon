@@ -81,7 +81,7 @@ body {
   gap: 1rem;
 }
 
-.hero-actions a {
+.hero-actions nav a {
   color: var(--muted);
 }
 
@@ -203,6 +203,11 @@ dd {
   height: auto;
   padding-inline: 1rem;
   font-size: 1rem;
+  text-decoration: none;
+}
+
+.event-count {
+  margin: 0.75rem 0 0;
 }
 
 [data-slot="button"][data-pending] {
