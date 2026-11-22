@@ -61,6 +61,8 @@ dependencies {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+    maxParallelForks = 1
+    jvmArgs("-XX:ParallelGCThreads=1", "-XX:ConcGCThreads=1")
 }
 
 tasks.named<Jar>("jar") {
