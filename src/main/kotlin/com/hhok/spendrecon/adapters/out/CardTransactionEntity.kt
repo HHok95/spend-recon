@@ -9,6 +9,7 @@ import org.hibernate.type.SqlTypes
 import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
+import com.hhok.spendrecon.Tenants
 import java.util.UUID
 
 @Entity
@@ -16,6 +17,8 @@ import java.util.UUID
 class CardTransactionEntity(
     @Id
     var id: UUID = UUID.randomUUID(),
+    @Column(name = "tenant_id", nullable = false)
+    var tenantId: UUID = Tenants.LOCAL,
     @Column(name = "card_owner_id", nullable = false)
     var cardOwnerId: String = "",
     @Column(name = "merchant_raw", nullable = false)

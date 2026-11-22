@@ -65,6 +65,18 @@ recon:
     poll-interval: 1s
     batch-size: 50
 
+# Demo sessions are off unless a profile turns them on. Prod does. Dev only
+# widens the browser allow-list. An empty list allows no browser origin.
+spendrecon:
+  demo:
+    enabled: false
+    session-ttl: 1h
+    cleanup-interval: 1m
+    session-creates-per-hour: 10
+    requests-per-minute: 60
+  cors:
+    allowed-origin-patterns: []
+
 ---
 spring:
   config:
@@ -72,3 +84,26 @@ spring:
       on-profile: "!prod"
 recon:
   api-key: local-dev-key
+
+---
+spring:
+  config:
+    activate:
+      on-profile: prod
+spendrecon:
+  demo:
+    enabled: true
+  cors:
+    allowed-origin-patterns:
+      - https://spend.hokheng.com
+
+---
+spring:
+  config:
+    activate:
+      on-profile: dev
+spendrecon:
+  cors:
+    allowed-origin-patterns:
+      - "http://localhost:*"
+      - "http://127.0.0.1:*"

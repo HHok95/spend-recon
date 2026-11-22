@@ -7,7 +7,7 @@ This service records the charge and the receipt, matches them with fixed rules, 
 One charge moves like this:
 
 1. `POST /transactions` records the charge. Its status is `UNMATCHED`.
-2. `POST /documents` records the receipt (`kind` `RECEIPT`) or a bill. `documentNumber` is optional. The same merchant and the same receipt or invoice number return 409.
+2. `POST /documents` records the receipt (`kind` `RECEIPT`) or a bill. `documentNumber` is optional. The same merchant and the same receipt or invoice number in one tenant return 409.
 3. `POST /reconcile/{txnId}` matches the charge. The result is `MATCHED`, `SUGGESTED`, or `EXCEPTION`.
 4. A `MATCHED` score of at least 0.95 is stored as `APPROVED` in that same request. Any other result waits. A person calls `POST /matches/{id}/approve` or `POST /matches/{id}/reject`.
 5. Approve, by the service or by a person, inserts one `MatchConfirmed` row into `outbox` in the same database transaction. A poller publishes it.
@@ -168,7 +168,7 @@ Each one is a decision already in the code and in [docs/ARCHITECTURE.md](docs/AR
 
 **Money is minor units plus a currency.** AUD 12.34 is stored as `1234` and `AUD`. JPY 500 is `500` and `JPY`. The scale comes from `java.util.Currency`. The API field is a decimal string. A JSON number is a 400, because a binary float cannot represent 0.10 exactly. Adding two amounts of different currencies throws. Postgres columns are `amount_minor BIGINT` and `currency CHAR(3)`. Section 3.
 
-**Idempotency keys.** Every write sends `Idempotency-Key`. The key is unique with the endpoint, so the same token on `POST /transactions` and `POST /documents` is two keys. The service inserts the key with `ON CONFLICT DO NOTHING` in the same transaction as the business write. The same key and the same raw body return the stored response and increment `idempotent_replays_total`. The same key and a different body return 422. A key whose response is not stored yet returns 409 with `Retry-After`. A 400 does not consume the key. Section 7. `documentNumber` on `POST /documents` is optional. The same merchant and the same receipt or invoice number return 409 problem+json. That conflict is the duplicate number, separate from the in-flight idempotency 409.
+**Idempotency keys.** Every write sends `Idempotency-Key`. The key is unique with the endpoint, so the same token on `POST /transactions` and `POST /documents` is two keys. The service inserts the key with `ON CONFLICT DO NOTHING` in the same transaction as the business write. The same key and the same raw body return the stored response and increment `idempotent_replays_total`. The same key and a different body return 422. A key whose response is not stored yet returns 409 with `Retry-After`. A 400 does not consume the key. Section 7. `documentNumber` on `POST /documents` is optional. The same merchant and the same receipt or invoice number in one tenant return 409 problem+json. Another tenant may store that same number. That conflict is the duplicate number, separate from the in-flight idempotency 409.
 
 **`matches.score` is nullable, with checks.** V1 created `score NOT NULL`. V2 drops that and adds two checks: `score` is null exactly when `document_id` is null, and a score is null or between 0 and 1. A match with no receipt has no score to invent. A match that holds a receipt always has one.
 
@@ -308,11 +308,77 @@ fly secrets set SPRING_DATASOURCE_URL='jdbc:postgresql://<host>/<db>?sslmode=req
 
 Compose and kind do not set `prod`. Their database password, API key, and Grafana login stay the local defaults.
 
+## Demo
+
+Set `spendrecon.demo.enabled=true` to give each visitor a tenant. The `prod` profile turns it on. The `dev` profile does not. Compose sets `SPRING_PROFILES_ACTIVE=dev`, so this machine still uses `X-API-Key` and does not open sessions.
+
+`POST /demo/session` has no body. It returns 201:
+
+```json
+{
+  "tenantId": "6f1c0e3a-1e2b-4c5d-8f90-123456789abc",
+  "token": "url-safe-token",
+  "expiresAt": "2026-11-22T13:00:00Z"
+}
+```
+
+Later calls send `Authorization: Bearer <token>`. That token is the credential. It selects the tenant. A missing, unknown, or expired token is 401 `application/problem+json`. Writes still need `Idempotency-Key`.
+
+`card_transactions`, `documents`, `matches`, and `idempotency_keys` carry `tenant_id`. Every read and write for those tables is filtered by the token's tenant. One tenant cannot see another tenant's charges, receipts, matches, or stored idempotent responses.
+
+A new tenant is seeded with three charges and three receipts, card owner `visitor`, date `2026-11-18`, currency `AUD`:
+
+| Merchant | Charge | Receipt | What reconcile does |
+| --- | --- | --- | --- |
+| Northwind Coffee | 18.40, tax 1.67 | same amount and tax | auto-approves, score 1.000 |
+| City Books | 42.00, tax 3.82 | 40.00, tax 3.64 | `EXCEPTION` / `AMOUNT_MISMATCH` |
+| Tram Fare | 4.60, tax 0.42 | same amount and tax | already `APPROVED`, with two audit events |
+
+The session and the tenant expire one hour after creation. A scheduled job deletes expired tenants, including their audit rows. It takes rows with `SELECT ... FOR UPDATE SKIP LOCKED`, so a second process does not delete the same tenant at the same time and a second run deletes nothing. Ordinary `UPDATE` and `DELETE` on `reconciliation_events` still fail. The job sets `spendrecon.purge` for its own transaction only.
+
+Limits live in this process. They are not shared with another machine. `POST /demo/session` allows 10 calls per address per hour. Any other route allows 60 calls per token per minute. The 429 body is `application/problem+json` and the response has `Retry-After`. The address is `Fly-Client-IP` when that header is present, otherwise the socket address.
+
+`BrowserCorsConfig` is the only CORS filter. The `prod` profile allows `https://spend.hokheng.com`. The `dev` profile allows `http://localhost:*` and `http://127.0.0.1:*`. The filter accepts `Authorization`, `X-Demo-Session`, `Idempotency-Key`, `Accept`, `Content-Type`, and `X-API-Key`, and it exposes `Retry-After`. An empty pattern list allows no browser origin.
+
+### Calls the demo uses
+
+`POST /transactions`, `POST /documents`, `POST /reconcile/{txnId}`, `POST /matches/{id}/approve`, and `POST /matches/{id}/reject` keep the bodies and status codes already described above. With demo mode on, send `Authorization: Bearer <token>`. That header is the one the demo page sends, and it is the credential for the call. A request that sends only `X-API-Key` is rejected.
+
+`GET /transactions` and `GET /documents` take `limit` (default 50, maximum 200) and return the newest rows first. `GET /transactions` returns `{"content":[...]}`. Each item is:
+
+```json
+{
+  "id": "uuid",
+  "cardOwnerId": "visitor",
+  "merchant": "Northwind Coffee",
+  "amount": "18.40",
+  "currency": "AUD",
+  "tax": "1.67",
+  "txnDate": "2026-11-18",
+  "status": "UNMATCHED",
+  "createdAt": "2026-11-22T12:00:00Z"
+}
+```
+
+`GET /transactions/{id}` returns that object, or 404. `GET /documents` returns `{"content":[...]}` with `kind`, `docDate`, and the same money fields.
+
+`GET /transactions/{id}/history` returns the charge's audit events, the same shape as `GET /matches/{id}/history`. An unmatched charge returns `[]`. A charge in another tenant returns 404.
+
+`GET /matches`, `GET /matches/{id}`, and `GET /matches/{id}/history` stay as they are and only return the token's tenant.
+
+`GET /demo/export` returns `text/csv` for rows whose status is `APPROVED` or `MATCHED`. With demo mode off the route is 404. The header is:
+
+```text
+matchId,transactionId,documentId,status,score,merchant,amount,currency,txnDate,decidedBy,decidedAt
+```
+
+Amounts are decimal strings. `documentId`, `score`, `decidedBy`, and `decidedAt` are empty when null. A cell whose first character is `=`, `+`, `-`, `@`, a tab, or a carriage return is prefixed with a single quote.
+
 ## What I'd do next
 
 **Creating the app and the database is still a separate step.** The image, `fly.toml`, the `prod` profile, and the deploy workflow are in the repository. Compose and `k8s/` remain local defaults: the password `spendrecon`, the API key `local-dev-key`, Grafana `admin` / `admin`, Postgres published on the host, and a kind volume that disappears with the node.
 
-**R7 is decided (Hok, 2026-11-22), option C.** An exact key is rejected: the same Idempotency-Key, which is unchanged, or the same receipt or invoice number from the same merchant. A near-match, the same merchant, amount, and date, or a similar document, is `POSSIBLE_DUPLICATE` and goes to `EXCEPTION` for a person to review. It is not auto-approved. A real repeat purchase, the same merchant and amount on a different date, or a different receipt number with nothing else matching, is accepted. Section 4 of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+**R7 is decided (Hok, 2026-11-22), option C.** An exact key is rejected: the same Idempotency-Key, which is unchanged, or the same receipt or invoice number from the same merchant in one tenant. A near-match, the same merchant, amount, and date, or a similar document, is `POSSIBLE_DUPLICATE` and goes to `EXCEPTION` for a person to review. It is not auto-approved. A real repeat purchase, the same merchant and amount on a different date, or a different receipt number with nothing else matching, is accepted. Section 4 of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 **A re-match can pick a receipt this charge already rejected.** The hold skips receipts locked by another live match. It does not skip a receipt this charge rejected earlier.
 

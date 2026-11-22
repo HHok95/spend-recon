@@ -24,5 +24,6 @@ Preconditions:
 ## Gotchas
 
 - Do not catch the SQL error and report success without the `append-only` text. A missing table fails too, and that is not this feature.
+- `DELETE` succeeds only when `spendrecon.purge` is `on` and the event belongs to a tenant whose expiry is already in the past. The local tenant is never eligible. This recipe does not set the switch. `UPDATE` still fails when the setting is on.
 - `TRUNCATE` is not what this recipe proves. The trigger covers `UPDATE` and `DELETE`.
 - Cleanup drops the database with the container. It must not delete the evidence directory, which is the only remaining proof.

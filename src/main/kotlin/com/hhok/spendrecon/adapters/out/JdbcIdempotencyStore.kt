@@ -1,5 +1,6 @@
 package com.hhok.spendrecon.adapters.out
 
+import com.hhok.spendrecon.CurrentTenant
 import com.hhok.spendrecon.ReconProperties
 import com.hhok.spendrecon.application.IdempotencyInFlightException
 import com.hhok.spendrecon.application.IdempotencyRecord
@@ -14,6 +15,7 @@ import java.sql.SQLException
 class JdbcIdempotencyStore(
     private val jdbc: JdbcTemplate,
     private val properties: ReconProperties,
+    private val tenants: CurrentTenant,
 ) : IdempotencyStore {
     override fun insertIfAbsent(
         key: String,
@@ -31,10 +33,11 @@ class JdbcIdempotencyStore(
             val inserted =
                 jdbc.update(
                     """
-                    INSERT INTO idempotency_keys (key, endpoint, request_hash)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT (key, endpoint) DO NOTHING
+                    INSERT INTO idempotency_keys (tenant_id, key, endpoint, request_hash)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT (tenant_id, key, endpoint) DO NOTHING
                     """.trimIndent(),
+                    tenants.id(),
                     key,
                     endpoint,
                     requestHash,
@@ -58,7 +61,7 @@ class JdbcIdempotencyStore(
                 """
                 SELECT request_hash, response_status, response_body
                 FROM idempotency_keys
-                WHERE key = ? AND endpoint = ?
+                WHERE tenant_id = ? AND key = ? AND endpoint = ?
                 """.trimIndent(),
                 { rs, _ ->
                     IdempotencyRecord(
@@ -67,6 +70,7 @@ class JdbcIdempotencyStore(
                         responseBody = rs.getString("response_body"),
                     )
                 },
+                tenants.id(),
                 key,
                 endpoint,
             ).firstOrNull()
@@ -82,10 +86,11 @@ class JdbcIdempotencyStore(
                 """
                 UPDATE idempotency_keys
                 SET response_status = ?, response_body = ?::jsonb
-                WHERE key = ? AND endpoint = ?
+                WHERE tenant_id = ? AND key = ? AND endpoint = ?
                 """.trimIndent(),
                 status,
                 body,
+                tenants.id(),
                 key,
                 endpoint,
             )
@@ -94,9 +99,10 @@ class JdbcIdempotencyStore(
             """
             SELECT response_body
             FROM idempotency_keys
-            WHERE key = ? AND endpoint = ?
+            WHERE tenant_id = ? AND key = ? AND endpoint = ?
             """.trimIndent(),
             String::class.java,
+            tenants.id(),
             key,
             endpoint,
         ) ?: error("Idempotency response body was empty after it was stored.")

@@ -1,6 +1,7 @@
 package com.hhok.spendrecon.adapters.out
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.hhok.spendrecon.CurrentTenant
 import com.hhok.spendrecon.application.LockedMatch
 import com.hhok.spendrecon.application.MatchingStore
 import com.hhok.spendrecon.application.OUTBOX_MATCH_CONFIRMED
@@ -24,6 +25,7 @@ class JpaMatchingStore(
     private val jdbc: JdbcTemplate,
     private val entityManager: EntityManager,
     private val json: ObjectMapper,
+    private val tenants: CurrentTenant,
 ) : MatchingStore {
     override fun lockCharge(transactionId: UUID): ChargeView? =
         jdbc
@@ -31,11 +33,12 @@ class JpaMatchingStore(
                 """
                 SELECT card_owner_id, merchant_norm, amount_minor, currency, tax_minor, txn_date
                 FROM card_transactions
-                WHERE id = ?
+                WHERE id = ? AND tenant_id = ?
                 FOR UPDATE
                 """.trimIndent(),
                 { rs, _ -> rs.toCharge() },
                 transactionId,
+                tenants.id(),
             ).firstOrNull()
 
     // Same owner and the three-day window are already hard filters, so rows
@@ -50,12 +53,14 @@ class JpaMatchingStore(
             SELECT id, card_owner_id, merchant_norm, amount_minor, currency, tax_minor, doc_date
             FROM documents
             WHERE kind = 'RECEIPT'
+              AND tenant_id = ?
               AND card_owner_id = ?
               AND doc_date BETWEEN ? AND ?
             ORDER BY id
             FOR UPDATE
             """.trimIndent(),
             { rs, _ -> rs.toReceipt() },
+            tenants.id(),
             ownerId,
             txnDate.minusDays(RuleSet.DATE_WINDOW_DAYS),
             txnDate.plusDays(RuleSet.DATE_WINDOW_DAYS),
@@ -67,11 +72,13 @@ class JpaMatchingStore(
                 """
                 SELECT document_id
                 FROM matches
-                WHERE document_id IS NOT NULL
+                WHERE tenant_id = ?
+                  AND document_id IS NOT NULL
                   AND status <> 'REJECTED'
                 """.trimIndent(),
-            ) { rs, _ -> rs.getObject("document_id", UUID::class.java) }
-            .toSet()
+                { rs, _ -> rs.getObject("document_id", UUID::class.java) },
+                tenants.id(),
+            ).toSet()
 
     override fun lockMatch(transactionId: UUID): LockedMatch? =
         jdbc
@@ -79,11 +86,12 @@ class JpaMatchingStore(
                 """
                 SELECT id, status, version, document_id, score, exception_type, rules_fired
                 FROM matches
-                WHERE transaction_id = ?
+                WHERE transaction_id = ? AND tenant_id = ?
                 FOR UPDATE
                 """.trimIndent(),
                 { rs, _ -> rs.toLockedMatch() },
                 transactionId,
+                tenants.id(),
             ).firstOrNull()
 
     override fun save(save: SaveMatch): SavedMatch {
@@ -116,9 +124,10 @@ class JpaMatchingStore(
             )
         }
         jdbc.update(
-            "UPDATE card_transactions SET status = ? WHERE id = ?",
+            "UPDATE card_transactions SET status = ? WHERE id = ? AND tenant_id = ?",
             save.finalStatus.name,
             save.transactionId,
+            tenants.id(),
         )
         return SavedMatch(save.matchId, version = version, finalStatus = save.finalStatus)
     }
@@ -131,6 +140,7 @@ class JpaMatchingStore(
         entityManager.persist(
             MatchEntity(
                 id = save.matchId,
+                tenantId = tenants.id(),
                 transactionId = save.transactionId,
                 documentId = candidate?.documentId,
                 status = save.finalStatus.name,

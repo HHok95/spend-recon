@@ -338,7 +338,7 @@ drive_schema() {
   echo "psql against the database this app migrated" >"$dir/command.txt"
   psql_exec -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY 1" >"$dir/tables.txt"
   local table
-  for table in card_transactions documents matches reconciliation_events idempotency_keys outbox; do
+  for table in card_transactions documents matches reconciliation_events idempotency_keys outbox tenants demo_sessions; do
     grep -q "$table" "$dir/tables.txt" || { echo "missing table $table" >&2; exit 1; }
   done
   local hash_count

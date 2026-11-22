@@ -1,6 +1,7 @@
 package com.hhok.spendrecon.adapters.out
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.hhok.spendrecon.CurrentTenant
 import com.hhok.spendrecon.application.ApplyDecision
 import com.hhok.spendrecon.application.AppliedDecision
 import com.hhok.spendrecon.application.DecisionStore
@@ -32,6 +33,7 @@ class JpaDecisionStore(
     private val entityManager: EntityManager,
     private val jdbc: JdbcTemplate,
     private val json: ObjectMapper,
+    private val tenants: CurrentTenant,
 ) : DecisionStore {
     @Transactional
     override fun apply(command: ApplyDecision): AppliedDecision {
@@ -42,6 +44,9 @@ class JpaDecisionStore(
         val match =
             entityManager.find(MatchEntity::class.java, command.matchId)
                 ?: throw MatchNotFoundException()
+        if (match.tenantId != tenants.id()) {
+            throw MatchNotFoundException()
+        }
         if (match.version != command.expectedVersion) {
             throw StaleVersionException()
         }
@@ -97,9 +102,10 @@ class JpaDecisionStore(
         }
         val chargeStatus = if (next == MatchStatus.REJECTED) UNMATCHED else next.name
         jdbc.update(
-            "UPDATE card_transactions SET status = ? WHERE id = ?",
+            "UPDATE card_transactions SET status = ? WHERE id = ? AND tenant_id = ?",
             chargeStatus,
             match.transactionId,
+            tenants.id(),
         )
         flushOrStale()
         return AppliedDecision(matchId = match.id, status = next, version = match.version)
@@ -108,17 +114,19 @@ class JpaDecisionStore(
     private fun transactionIdOf(matchId: UUID): UUID =
         jdbc
             .query(
-                "SELECT transaction_id FROM matches WHERE id = ?",
+                "SELECT transaction_id FROM matches WHERE id = ? AND tenant_id = ?",
                 { rs, _ -> rs.getObject("transaction_id", UUID::class.java) },
                 matchId,
+                tenants.id(),
             ).firstOrNull() ?: throw MatchNotFoundException()
 
     private fun lockCharge(transactionId: UUID) {
         val locked =
             jdbc.query(
-                "SELECT 1 FROM card_transactions WHERE id = ? FOR UPDATE",
+                "SELECT 1 FROM card_transactions WHERE id = ? AND tenant_id = ? FOR UPDATE",
                 { _, _ -> 1 },
                 transactionId,
+                tenants.id(),
             )
         if (locked.isEmpty()) {
             throw TransactionNotFoundException()
