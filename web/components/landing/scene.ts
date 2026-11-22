@@ -1,6 +1,7 @@
 import {
   ACESFilmicToneMapping,
   CanvasTexture,
+  CustomBlending,
   DirectionalLight,
   Group,
   HemisphereLight,
@@ -11,6 +12,8 @@ import {
   MeshPhysicalMaterial,
   MeshStandardMaterial,
   Object3D,
+  OneFactor,
+  OneMinusSrcAlphaFactor,
   PerspectiveCamera,
   PlaneGeometry,
   PMREMGenerator,
@@ -225,9 +228,24 @@ export async function mountScene(canvas: HTMLCanvasElement): Promise<SceneHandle
   faceCtx.scale(2, 2);
   text(faceCtx, "HokWallet", 56, 120, { w: 600, size: 76, col: "#eef1f5" });
   text(faceCtx, "•• 4417", 56, 470, { f: mono, w: 500, size: 66, col: "#eef1f5" });
+  // The clear pixels are (0,0,0,0). A straight-alpha blend multiplies that black into the
+  // glyph edge. Upload premultiplied and blend with One, OneMinusSrcAlpha. Leaving
+  // material.premultipliedAlpha on would multiply by alpha a second time and restore the fringe.
+  const faceMap = texture(faceCanvas);
+  faceMap.premultiplyAlpha = true;
   const face = new Mesh(
     new PlaneGeometry(0.0856, 0.054),
-    new MeshBasicMaterial({ map: texture(faceCanvas), transparent: true, toneMapped: false, opacity: 1 }),
+    new MeshBasicMaterial({
+      map: faceMap,
+      transparent: true,
+      toneMapped: false,
+      opacity: 1,
+      blending: CustomBlending,
+      blendSrc: OneFactor,
+      blendDst: OneMinusSrcAlphaFactor,
+      blendSrcAlpha: OneFactor,
+      blendDstAlpha: OneMinusSrcAlphaFactor,
+    }),
   );
   face.rotation.x = -Math.PI / 2;
   face.position.y = 0.00045;
