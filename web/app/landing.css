@@ -1,0 +1,548 @@
+.landing {
+  --gut: max(7vw, 40px);
+  --bg: oklch(0.225 0.009 255);
+  --panel: oklch(0.255 0.01 255);
+  --raised: oklch(0.29 0.011 255);
+  --line: oklch(0.36 0.012 255);
+  --line2: oklch(0.31 0.011 255);
+  --fg: oklch(0.95 0.004 255);
+  --fg2: oklch(0.8 0.012 255);
+  --fg3: oklch(0.7 0.012 255);
+  --amber: oklch(0.82 0.12 78);
+  --amberink: oklch(0.24 0.035 70);
+  --mint: oklch(0.79 0.13 158);
+  --coral: oklch(0.74 0.15 25);
+  --sans: var(--font-landing-sans), "Instrument Sans", sans-serif;
+  --mono: var(--font-landing-mono), "JetBrains Mono", ui-monospace, monospace;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-variant-numeric: tabular-nums;
+  min-height: 100vh;
+  overflow-x: clip;
+}
+
+html:has(.landing),
+body:has(.landing) {
+  color-scheme: dark;
+  --bg: oklch(0.225 0.009 255);
+  --panel: oklch(0.255 0.01 255);
+  --raised: oklch(0.29 0.011 255);
+  --line: oklch(0.36 0.012 255);
+  --line2: oklch(0.31 0.011 255);
+  --fg: oklch(0.95 0.004 255);
+  --fg2: oklch(0.8 0.012 255);
+  --fg3: oklch(0.7 0.012 255);
+  --amber: oklch(0.82 0.12 78);
+  --amberink: oklch(0.24 0.035 70);
+  --mint: oklch(0.79 0.13 158);
+  --coral: oklch(0.74 0.15 25);
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.landing a {
+  color: inherit;
+}
+
+.landing h1,
+.landing h2,
+.landing ol,
+.landing p {
+  margin: 0;
+}
+
+.top {
+  position: fixed;
+  z-index: 5;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 64px;
+  padding: 0 var(--gut);
+  font-size: 15px;
+}
+
+.word {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.word-short {
+  display: none;
+}
+
+.top nav {
+  display: flex;
+  gap: 8px;
+}
+
+.top a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 10px;
+  color: var(--fg2);
+  text-decoration: none;
+}
+
+.stage,
+.poster,
+.frames,
+.frames img {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.stage {
+  z-index: 1;
+  display: block;
+  pointer-events: none;
+}
+
+.poster {
+  z-index: 0;
+  object-fit: cover;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 300ms linear;
+}
+
+.landing.is-live .poster {
+  opacity: 0;
+}
+
+.frames {
+  z-index: 0;
+  display: none;
+  pointer-events: none;
+}
+
+.frames img {
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 200ms linear;
+}
+
+.frames img[data-on="1"] {
+  opacity: 1;
+}
+
+.landing main {
+  position: relative;
+  z-index: 2;
+}
+
+.beat {
+  height: 200vh;
+}
+
+.beat-last {
+  height: 100vh;
+}
+
+.copy {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  height: 100vh;
+  padding-left: var(--gut);
+  pointer-events: none;
+}
+
+.copy-inner {
+  width: min(440px, calc(100vw - var(--gut) - 48px));
+  pointer-events: auto;
+}
+
+.beat-hero .copy-inner {
+  width: min(560px, calc(100vw - var(--gut) - 48px));
+}
+
+.eyebrow,
+.step,
+.fact,
+.tag,
+.footnote,
+.log,
+.token {
+  font-family: var(--mono);
+}
+
+.eyebrow,
+.step {
+  color: var(--fg3);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.landing .eyebrow {
+  margin-bottom: 16px;
+}
+
+.landing .step {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.landing h1 {
+  font-size: 58px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 62px;
+  text-wrap: balance;
+}
+
+.landing h2 {
+  font-size: 42px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 48px;
+  text-wrap: balance;
+}
+
+.landing .lede {
+  max-width: 34em;
+  margin-top: 40px;
+  color: var(--fg2);
+  font-size: 19px;
+  line-height: 30px;
+}
+
+.landing .body {
+  max-width: 36em;
+  margin-top: 16px;
+  color: var(--fg2);
+  font-size: 17px;
+  line-height: 27px;
+}
+
+.landing .fact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35em;
+  margin-top: 22px;
+  color: var(--fg);
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.fact b {
+  font-weight: 600;
+}
+
+.fact .ok {
+  color: var(--mint);
+}
+
+.fact .bad {
+  color: var(--coral);
+}
+
+.fact .quiet {
+  flex-basis: 100%;
+  color: var(--fg3);
+  font-size: 14px;
+  text-decoration: none;
+}
+
+.fact i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  transform: translateY(-1px);
+}
+
+.landing .tag {
+  margin-top: 14px;
+  color: var(--fg3);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.log {
+  display: grid;
+  gap: 0;
+  margin-top: 28px;
+  padding: 0;
+  border-top: 1px solid var(--line2);
+  list-style: none;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.log li {
+  display: grid;
+  grid-template-columns: 6.4rem 9.6rem max-content;
+  gap: 12px;
+  align-items: baseline;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line2);
+  white-space: nowrap;
+}
+
+.log .item,
+.log .actor {
+  color: var(--fg2);
+}
+
+.log b {
+  font-weight: 600;
+}
+
+.log .ok {
+  color: var(--mint);
+}
+
+.log .bad {
+  color: var(--coral);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 24px;
+  margin-top: 28px;
+}
+
+.landing a.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 52px;
+  padding: 0 22px;
+  border-radius: 10px;
+  background: var(--amber);
+  color: var(--amberink);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1;
+  text-decoration: none;
+}
+
+.landing .actions .link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--fg2);
+  font-size: 17px;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.log + .reveal .actions {
+  margin-top: 32px;
+}
+
+.landing .footnote {
+  position: fixed;
+  z-index: 4;
+  bottom: 18px;
+  left: var(--gut);
+  max-width: min(1180px, calc(100vw - 2 * var(--gut)));
+  margin: 0;
+  color: var(--fg3);
+  font-size: 12px;
+  line-height: 17px;
+  pointer-events: none;
+}
+
+.shot {
+  display: none;
+  margin: 0;
+}
+
+.shot img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.landing a:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.btn:focus-visible {
+  outline-color: var(--fg);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .top a:hover,
+  .actions .link:hover {
+    color: var(--fg);
+  }
+
+  .btn:hover {
+    filter: brightness(1.06);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) and (min-width: 768px) {
+  .stage,
+  .poster {
+    display: none;
+  }
+
+  .frames {
+    display: block;
+  }
+
+  .reveal {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
+
+@media (min-width: 768px) {
+  html[data-webgl="off"] .stage,
+  html[data-webgl="off"] .poster {
+    display: none;
+  }
+
+  html[data-webgl="off"] .frames {
+    display: block;
+  }
+}
+
+@media (max-width: 767px) {
+  .landing {
+    --gut: 20px;
+  }
+
+  .top {
+    height: 56px;
+    padding: 0 8px 0 20px;
+  }
+
+  .word-full {
+    display: none;
+  }
+
+  .word-short {
+    display: inline;
+  }
+
+  .top nav {
+    gap: 0;
+    flex-shrink: 0;
+  }
+
+  .top a {
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 12px;
+  }
+
+  .landing main {
+    padding-top: 56px;
+  }
+
+  .beat,
+  .beat-last {
+    height: auto;
+  }
+
+  .copy {
+    position: static;
+    display: block;
+    height: auto;
+    padding: 0 20px 48px;
+  }
+
+  .copy-inner,
+  .beat-hero .copy-inner {
+    width: auto;
+  }
+
+  .shot {
+    display: block;
+    aspect-ratio: 4 / 3;
+    margin: 0 20px 20px;
+    overflow: hidden;
+    border-radius: 12px;
+    background: var(--panel);
+  }
+
+  .stage,
+  .poster,
+  .frames {
+    display: none;
+  }
+
+  .landing h1 {
+    font-size: 36px;
+    line-height: 40px;
+  }
+
+  .landing h2 {
+    font-size: 30px;
+    line-height: 35px;
+  }
+
+  .landing .lede {
+    font-size: 17px;
+    line-height: 26px;
+  }
+
+  .landing .body {
+    font-size: 16px;
+    line-height: 25px;
+  }
+
+  .actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .btn,
+  .actions .link {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .log li {
+    grid-template-columns: auto auto minmax(0, 1fr);
+    white-space: normal;
+  }
+
+  .landing .footnote {
+    position: static;
+    max-width: none;
+    margin: 0 20px 32px;
+  }
+
+  .reveal {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
