@@ -1,6 +1,15 @@
 .git
+.github
 .gradle
-build
 .idea
-*.iml
 .kube
+.cursor
+build
+out
+*.iml
+*.md
+docs
+k8s
+monitoring
+scripts
+src/test
