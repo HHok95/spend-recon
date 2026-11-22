@@ -80,6 +80,15 @@ function fadeObject(object: Object3D, opacity: number) {
   });
 }
 
+function replaceLostCanvas(canvas: HTMLCanvasElement) {
+  const surface = canvas.cloneNode() as HTMLCanvasElement;
+  delete surface.dataset.glReady;
+  delete surface.dataset.draws;
+  delete surface.dataset.tris;
+  canvas.replaceWith(surface);
+  return surface;
+}
+
 export async function mountScene(canvas: HTMLCanvasElement): Promise<SceneHandle> {
   const root = canvas.closest("[data-landing]");
   const styles = root ? getComputedStyle(root) : null;
@@ -96,7 +105,13 @@ export async function mountScene(canvas: HTMLCanvasElement): Promise<SceneHandle
     // The canvas still draws with the fallback face.
   }
 
-  const renderer = new WebGLRenderer({ canvas, antialias: true, alpha: true });
+  // A client navigation back to `/` reuses the cached canvas. loseContext() left
+  // that context dead, and a new renderer on it throws. Swap in a fresh canvas.
+  const surface =
+    canvas.dataset.glReady === "1" && canvas.getContext("webgl2")?.isContextLost()
+      ? replaceLostCanvas(canvas)
+      : canvas;
+  const renderer = new WebGLRenderer({ canvas: surface, antialias: true, alpha: true });
   if (!renderer.getContext()) throw new Error("webgl");
   renderer.outputColorSpace = SRGBColorSpace;
   renderer.toneMapping = ACESFilmicToneMapping;
@@ -371,8 +386,8 @@ export async function mountScene(canvas: HTMLCanvasElement): Promise<SceneHandle
   let disposed = false;
 
   const resize = () => {
-    width = canvas.clientWidth || window.innerWidth;
-    height = canvas.clientHeight || window.innerHeight;
+    width = surface.clientWidth || window.innerWidth;
+    height = surface.clientHeight || window.innerHeight;
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     renderer.setSize(width, height, false);
     dirty = true;
@@ -469,9 +484,9 @@ export async function mountScene(canvas: HTMLCanvasElement): Promise<SceneHandle
       painted = true;
       const draws = renderer.info.render.calls;
       const triangles = renderer.info.render.triangles;
-      canvas.dataset.glReady = "1";
-      canvas.dataset.draws = String(draws);
-      canvas.dataset.tris = String(triangles);
+      surface.dataset.glReady = "1";
+      surface.dataset.draws = String(draws);
+      surface.dataset.tris = String(triangles);
     }
     return painted;
   };
